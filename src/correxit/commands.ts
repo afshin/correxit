@@ -86,6 +86,7 @@ export function commands(
     io.request(handle, factory, manager, unlocker, silent);
   const open = (workbook: Workbook | null) => Workbook.open(workbook, true);
   const save = async (workbook: Workbook, undo = true) => {
+    if (workbook.context.isDisposed) return;
     if (!undo) workbook.context.model.sharedModel.clearUndoHistory();
     await workbook.context.save();
   };
@@ -164,11 +165,17 @@ export function commands(
         : [];
     });
   };
-  const reify = async (args: Partial<Credentials>): Promise<Reified> => {
+  const reify = async (
+    args: Partial<Credentials & { context: string | null; view: string | null }>
+  ): Promise<Reified> => {
     const handle = Workbook.Credentials.normalize(args);
-    const workbook = handle
-      ? await fetch(handle)
-      : active();
+    // An explicit view must still exist; never fall back to its path or focus.
+    const panel = args.view && find(shell.widgets('main'), widget =>
+      widget instanceof NotebookPanel && widget.content.id === args.view
+    );
+    const workbook = args.context ? state.resolve(args.context) : args.view
+      ? panel instanceof NotebookPanel ? panel : null
+      : handle ? await fetch(handle) : active();
     const rubric = open(workbook);
     return { handle, rubric, workbook } as Reified;
   };
@@ -281,10 +288,17 @@ export function commands(
     isEnabled: () => open(state.workbook())?.locked === false,
     isVisible: () => commands.isEnabled(CommandIDs.assign),
     label: trans.__('Assign workbook...'),
-    execute: async (args: Partial<Credentials & Assignment>) => {
-      const { rubric, workbook } = await reify(args);
-      if (!rubric) return;
-      await Workbook.assign(workbook, args);
+    execute: async (args: Partial<Credentials & Assignment & {
+      rubric: string; context: string | null; view: string | null;
+    }>) => {
+      const { workbook } = await reify(args);
+      if (!workbook || workbook.context.isDisposed || workbook.content?.isDisposed)
+        return null;
+      // Re-read after resolution: the originating rubric may have been replaced.
+      const rubric = open(workbook);
+      if (!rubric || (args.rubric && args.rubric !== rubric.id))
+        return null;
+      return (await Workbook.assign(workbook, args)).assignment;
     }
   }));
   disposables.push(commands.addCommand(CommandIDs.unassign, {
@@ -374,7 +388,7 @@ export function commands(
       if (!rubric || rubric.locked || !rubric.assignment.assignee) return;
       try {
         await Workbook.certify(workbook, trans);
-        await commands.execute(CommandIDs.save, { ...args, undo: false });
+        await save(workbook, false);
       } catch (error) {
         showErrorMessage(...Error.interpret(error, trans));
       }
@@ -397,7 +411,7 @@ export function commands(
         const certified = await Workbook.certify(workbook, trans, true);
         const receipt = await collector(certified);
         await Workbook.collect(workbook, receipt);
-        await commands.execute(CommandIDs.save, { ...args, undo: false });
+        await save(workbook, false);
       } catch (error) {
         showErrorMessage(...Error.interpret(error, trans));
       }
@@ -680,7 +694,7 @@ If conversion fails, Correxit restores the original notebook.`
     execute: async (args: Partial<{ referent: string }>) => {
       const workbook = state.workbook();
       if (!workbook || !args.referent) return;
-      Workbook.dereference(workbook, args.referent);
+      await Workbook.dereference(workbook, args.referent);
     }
   }));
   disposables.push(commands.addCommand(CommandIDs.distribute, {
@@ -724,7 +738,7 @@ If conversion fails, Correxit restores the original notebook.`
       if (!button.accept) return;
       try {
         await Workbook.draft(workbook);
-        await commands.execute(CommandIDs.save, { ...args, undo: false });
+        await save(workbook, false);
       } catch (error) {
         showErrorMessage(...Error.interpret(error, trans));
       }
@@ -764,7 +778,7 @@ If conversion fails, Correxit restores the original notebook.`
       if (!workbook || !id || !rubric) return;
       if (args.intervention !== undefined)
         await Workbook.intervene(workbook, id, args.intervention);
-      await commands.execute(CommandIDs.save, { undo: false });
+      await save(workbook, false);
     }
   }));
   disposables.push(commands.addCommand(CommandIDs.lock, {
@@ -781,7 +795,7 @@ If conversion fails, Correxit restores the original notebook.`
       if (!rubric) return;
       try {
         await Workbook.lock(workbook);
-        await commands.execute(CommandIDs.save, { ...args, undo: false });
+        await save(workbook, false);
       } catch (error) {
         showErrorMessage(...Error.interpret(error, trans));
       }
@@ -945,7 +959,7 @@ If conversion fails, Correxit restores the original notebook.`
     execute: async (args: Partial<Cell>) => {
       const workbook = state.workbook();
       const id = state.cell(args);
-      if (workbook && id) Workbook.remove(workbook, id);
+      if (workbook && id) await Workbook.remove(workbook, id);
     }
   }));
   disposables.push(commands.addCommand(CommandIDs.reset, {

@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures';
-import { Cell, Fixture, setup } from './utils';
+import { Cell, Fixture, notebook, setup } from './utils';
 
 test.use({ autoGoto: false });
 
@@ -60,6 +60,702 @@ test('commands are disabled without a workbook rubric', async ({ page }) => {
   expect(result.toggle).toBe(false);
   await dispose();
 });
+
+test('assignment saves target a view while path commands fetch headlessly', async ({
+  page
+}) => {
+  const { dispose } = await prepare(page, [{ id: 'cell', source: 'x = 1' }]);
+
+  try {
+    const result = await page.evaluate(async () => {
+      const { Correxit, Rubric, Workbook } = (window as any).__correxit__;
+      const app = (window as any).jupyterapp;
+      const panel = app.shell.currentWidget;
+      const created = Rubric.create();
+      await Workbook.update(panel, {
+        ...created,
+        key: 'secret',
+        assignment: {
+          ...created.assignment,
+          keys: {
+            private: { assignee: null, author: 'priv' },
+            public: { assignee: null, author: 'pub' }
+          }
+        }
+      });
+      const path = panel.context.path;
+      const view = panel.content.id;
+      await panel.context.rename(`${path}.renamed.ipynb`);
+      try {
+        await app.commands.execute('correxit:assign', {
+          view,
+          path,
+          rubric: created.id,
+          name: 'Open'
+        });
+      } finally {
+        await panel.context.rename(path);
+      }
+      const name = Workbook.open(panel).assignment.name;
+      const missing = await app.commands.execute('correxit:assign', {
+        view: 'closed-view',
+        path,
+        rubric: created.id,
+        name: 'Wrong'
+      });
+      const stale = await app.commands.execute('correxit:assign', {
+        view,
+        rubric: 'replaced-rubric',
+        name: 'Wrong'
+      });
+      await app.commands.execute('correxit:save');
+      const grade = await app.commands.execute('correxit:correct', { path });
+
+      const unlocker = await app.resolveRequiredService(Correxit.Unlocker);
+      const previous = unlocker.unlock;
+      const workbooks: any[] = [];
+      unlocker.unlock = async (workbook: any, credentials: any) => {
+        workbooks.push(workbook);
+        return Workbook.unlock(workbook, credentials.key);
+      };
+      try {
+        const assignment = await app.commands.execute('correxit:assign', {
+          path,
+          rubric: created.id,
+          key: 'secret',
+          name: 'Fetched'
+        });
+        return {
+          name,
+          missing,
+          stale,
+          fetched: assignment.name,
+          resolved: grade.resolved,
+          live: Workbook.open(panel).assignment.name,
+          headless: workbooks.map(workbook => Workbook.headless(workbook))
+        };
+      } finally {
+        unlocker.unlock = previous;
+        workbooks.forEach(workbook => workbook.context.dispose());
+      }
+    });
+
+    expect(result).toEqual({
+      name: 'Open',
+      missing: null,
+      stale: null,
+      fetched: 'Fetched',
+      resolved: true,
+      live: 'Open',
+      headless: [true]
+    });
+  } finally {
+    await dispose();
+  }
+});
+
+for (const change of ['replacement', 'closure']) {
+  test(`assignment rejects ${change} during view resolution`, async ({
+    page
+  }) => {
+    const { dispose } = await prepare(page, [{ id: 'cell', source: 'x = 1' }]);
+    try {
+      const result = await page.evaluate(async (change: string) => {
+        const { Rubric, Workbook } = (window as any).__correxit__;
+        const app = (window as any).jupyterapp;
+        const panel = app.shell.currentWidget;
+        const created = Rubric.create();
+        const original = {
+          ...created,
+          key: 'secret',
+          assignment: {
+            ...created.assignment,
+            keys: {
+              private: { assignee: null, author: 'priv' },
+              public: { assignee: null, author: 'pub' }
+            }
+          }
+        };
+        await Workbook.update(panel, original);
+        const pending = app.commands.execute('correxit:assign', {
+          view: panel.content.id,
+          path: panel.context.path,
+          rubric: created.id,
+          name: 'Stale edit'
+        });
+        // Change the target while the command awaits reification.
+        if (change === 'closure') panel.dispose();
+        else
+          await Workbook.update(panel, { ...original, id: Rubric.create().id });
+        return {
+          result: await pending,
+          name:
+            change === 'closure' ? null : Workbook.open(panel).assignment.name
+        };
+      }, change);
+      expect(result).toEqual({
+        result: null,
+        name: change === 'closure' ? null : ''
+      });
+    } finally {
+      await dispose();
+    }
+  });
+}
+
+for (const { command, path } of [
+  'certify',
+  'collect',
+  'draft',
+  'intervene',
+  'lock'
+].flatMap(command =>
+  (command === 'intervene' ? [false] : [false, true]).map(path => ({
+    command,
+    path
+  }))
+)) {
+  test(`${command} saves its resolved ${path ? 'headless' : 'open'} workbook after switching tabs`, async ({
+    page
+  }) => {
+    const { dispose } = await prepare(page, [
+      { id: 'cell', source: 'print(42)' }
+    ]);
+    let second: string | null = null;
+    try {
+      await page.evaluate(async (command: string) => {
+        const { Rubric, Workbook } = (window as any).__correxit__;
+        const first = (window as any).jupyterapp.shell.currentWidget;
+        const created = Rubric.create();
+        const rubric = await Rubric.assign(
+          Rubric.add(
+            {
+              ...created,
+              key: 'secret',
+              contents: [{ id: 'cell', type: 'code', digest: null }],
+              assignment: {
+                ...created.assignment,
+                keys: {
+                  private: { assignee: null, author: 'priv' },
+                  public: { assignee: null, author: 'pub' }
+                }
+              }
+            },
+            {
+              id: 'cell',
+              is: 'reviewable',
+              payload: null,
+              points: 1,
+              references: null
+            }
+          ),
+          {
+            assignee: 'student@example.com',
+            roster: ['student@example.com']
+          }
+        );
+        const signed = await Rubric.sign(rubric, {
+          interventions: {
+            cell: Rubric.Score.intervene('cell', {
+              comment: '',
+              points: 1,
+              possible: 1
+            })
+          },
+          kernel: null,
+          scores: {}
+        });
+        await Workbook.update(
+          first,
+          command === 'draft'
+            ? { ...signed, assignment: { ...signed.assignment, submission: 1 } }
+            : signed
+        );
+        if (command === 'draft') await Workbook.lock(first);
+        await first.context.save();
+        (window as any).__correxit_followup = {
+          first,
+          original: Workbook[command],
+          command,
+          restores: [],
+          target: null,
+          release: null,
+          done: null,
+          finished: false,
+          saves: [],
+          clears: [],
+          expected: null
+        };
+      }, command);
+      second = await notebook(page);
+      await page.evaluate(() => {
+        const app = (window as any).jupyterapp;
+        const record = (window as any).__correxit_followup;
+        record.second = app.shell.currentWidget;
+        app.shell.activateById(record.first.id);
+      });
+      await expect
+        .poll(() =>
+          page.evaluate(() =>
+            (window as any).jupyterapp.commands.isEnabled('correxit:convert')
+          )
+        )
+        .toBe(false);
+      await page.evaluate(
+        ({ command, path }: { command: string; path: boolean }) => {
+          const { Rubric, Workbook } = (window as any).__correxit__;
+          const app = (window as any).jupyterapp;
+          const record = (window as any).__correxit_followup;
+          const watch = (workbook: any, label: string) => {
+            const context = workbook.context;
+            const model = context.model.sharedModel;
+            const save = context.save;
+            const clear = model.clearUndoHistory;
+            context.save = async () => {
+              record.saves.push(label);
+              return save.call(context);
+            };
+            model.clearUndoHistory = () => {
+              record.clears.push(label);
+              return clear.call(model);
+            };
+            record.restores.push(() => {
+              context.save = save;
+              model.clearUndoHistory = clear;
+            });
+          };
+          watch(record.second, 'other');
+          Workbook[command] = async (workbook: any, ...args: any[]) => {
+            record.target = workbook;
+            watch(workbook, 'source');
+            const result = await record.original(workbook, ...args);
+            record.expected =
+              workbook.context.model.sharedModel.getMetadata('correxit');
+            await new Promise<void>(resolve => {
+              record.release = resolve;
+            });
+            return result;
+          };
+          const args = path
+            ? {
+                path: record.first.context.path,
+                ...(command === 'draft' ? {} : { key: 'secret' })
+              }
+            : command === 'intervene'
+              ? {
+                  id: 'cell',
+                  intervention: Rubric.Score.intervene('cell', {
+                    comment: '',
+                    points: 0,
+                    possible: 1
+                  })
+                }
+              : {};
+          record.done = app.commands
+            .execute(`correxit:${command}`, args)
+            .finally(() => {
+              record.finished = true;
+            });
+        },
+        { command, path }
+      );
+      if (command === 'draft')
+        await page.getByRole('button', { name: 'Revert', exact: true }).click();
+      await page.waitForFunction(() => {
+        const record = (window as any).__correxit_followup;
+        return record.release || record.finished;
+      });
+      expect(
+        await page.evaluate(() => !!(window as any).__correxit_followup.release)
+      ).toBe(true);
+      await page.evaluate(() => {
+        const app = (window as any).jupyterapp;
+        app.shell.activateById((window as any).__correxit_followup.second.id);
+      });
+      await expect
+        .poll(() =>
+          page.evaluate(() =>
+            (window as any).jupyterapp.commands.isEnabled('correxit:convert')
+          )
+        )
+        .toBe(true);
+      const result = await page.evaluate(async () => {
+        const { Workbook } = (window as any).__correxit__;
+        const app = (window as any).jupyterapp;
+        const record = (window as any).__correxit_followup;
+        record.saves = [];
+        record.clears = [];
+        record.release();
+        await record.done;
+        const stored = await app.serviceManager.contents.get(
+          record.first.context.path
+        );
+        return {
+          saves: record.saves,
+          clears: record.clears,
+          headless: Workbook.headless(record.target),
+          stored: stored.content.metadata.correxit,
+          expected: record.expected
+        };
+      });
+      expect(result.saves).toEqual(['source']);
+      expect(result.clears).toEqual(['source']);
+      expect(result.headless).toBe(path);
+      expect(result.stored).toEqual(result.expected);
+    } finally {
+      await page
+        .evaluate(async () => {
+          const { Workbook } = (window as any).__correxit__;
+          const app = (window as any).jupyterapp;
+          const record = (window as any).__correxit_followup;
+          if (!record) return;
+          record.release?.();
+          if (record.release) await record.done.catch(() => {});
+          Workbook[record.command] = record.original;
+          record.restores.forEach((restore: () => void) => restore());
+          if (Workbook.headless(record.target)) record.target.context.dispose();
+          record.second?.dispose();
+          app.shell.activateById(record.first.id);
+          delete (window as any).__correxit_followup;
+        })
+        .catch(() => {});
+      if (second) await page.contents.deleteFile(second).catch(() => {});
+      await dispose();
+    }
+  });
+}
+
+for (const outcome of [
+  'success',
+  'encryption failure',
+  'metadata failure',
+  'older encryption failure',
+  'both encryption failures'
+]) {
+  for (const order of ['oldest first', 'newest first']) {
+    test(`superseded intervention awaits the latest write: ${outcome}, ${order}`, async ({
+      page
+    }) => {
+      const { dispose } = await prepare(page, [
+        { id: 'cell', source: 'print(42)' }
+      ]);
+      try {
+        await page.evaluate(async (outcome: string) => {
+          const { Workbook, Rubric } = (window as any).__correxit__;
+          const app = (window as any).jupyterapp;
+          const panel = app.shell.currentWidget;
+          const created = Rubric.create();
+          await Workbook.update(
+            panel,
+            Rubric.add(
+              {
+                ...created,
+                key: 'secret',
+                assignment: {
+                  ...created.assignment,
+                  keys: {
+                    private: { assignee: null, author: 'priv' },
+                    public: { assignee: null, author: 'pub' }
+                  }
+                }
+              },
+              {
+                id: 'cell',
+                is: 'reviewable',
+                payload: null,
+                points: 1,
+                references: null
+              }
+            )
+          );
+          await panel.context.save();
+          const notebook = panel.context.model.sharedModel;
+          const held = ((window as any).__correxit_write = {
+            panel,
+            lock: Rubric.lock,
+            write: notebook.setMetadata,
+            clear: notebook.clearUndoHistory,
+            save: panel.context.save,
+            releases: [],
+            calls: 0,
+            clears: 0,
+            saves: 0,
+            finished: false
+          });
+          notebook.clearUndoHistory = () => {
+            held.clears++;
+            return held.clear.call(notebook);
+          };
+          panel.context.save = () => {
+            held.saves++;
+            return held.save.call(panel.context);
+          };
+          notebook.setMetadata = (...args: any[]) => {
+            if (outcome === 'metadata failure' && args[0] === 'correxit')
+              throw new Error(outcome);
+            return held.write.apply(notebook, args);
+          };
+          Rubric.lock = async (...args: any[]) => {
+            const index = held.calls++;
+            const value = await held.lock(...args);
+            await new Promise<void>(resolve => {
+              held.releases[index] = resolve;
+            });
+            if (
+              index === 0 &&
+              ['older encryption failure', 'both encryption failures'].includes(
+                outcome
+              )
+            )
+              throw new Error('older encryption failure');
+            if (
+              index === 1 &&
+              ['encryption failure', 'both encryption failures'].includes(
+                outcome
+              )
+            )
+              throw new Error('encryption failure');
+            return value;
+          };
+          held.intervention = app.commands
+            .execute('correxit:intervene', {
+              id: 'cell',
+              intervention: Rubric.Score.intervene('cell', {
+                comment: '',
+                points: 1,
+                possible: 1
+              })
+            })
+            .then(
+              () => null,
+              (error: Error) => error.message
+            )
+            .finally(() => {
+              held.finished = true;
+            });
+        }, outcome);
+        await page.waitForFunction(
+          () => !!(window as any).__correxit_write.releases[0]
+        );
+        await page.evaluate(() => {
+          (window as any).__correxit_write.comment = (
+            window as any
+          ).jupyterapp.commands
+            .execute('correxit:comment', { id: 'cell', comment: 'New comment' })
+            .then(
+              () => null,
+              (error: Error) => error.message
+            );
+        });
+        await page.waitForFunction(
+          () => !!(window as any).__correxit_write.releases[1]
+        );
+        const early = await page.evaluate(async (order: string) => {
+          const held = (window as any).__correxit_write;
+          held.releases[order === 'oldest first' ? 0 : 1]();
+          if (order === 'newest first') await held.comment;
+          // Drain continuations after releasing the already-encrypted result.
+          await new Promise(resolve => setTimeout(resolve, 0));
+          return {
+            finished: held.finished,
+            clears: held.clears,
+            saves: held.saves
+          };
+        }, order);
+        expect(early).toEqual({ finished: false, clears: 0, saves: 0 });
+        const result = await page.evaluate(async (order: string) => {
+          const held = (window as any).__correxit_write;
+          const app = (window as any).jupyterapp;
+          held.releases[order === 'oldest first' ? 1 : 0]();
+          const errors = await Promise.all([held.intervention, held.comment]);
+          const disk = await app.serviceManager.contents.get(
+            held.panel.context.path
+          );
+          const live =
+            held.panel.context.model.sharedModel.getMetadata('correxit');
+          const report = (rubric: any) => ({
+            points: rubric.assignment.report.interventions.cell?.points ?? null,
+            comment: rubric.assignment.report.scores.cell?.comment ?? null
+          });
+          return {
+            errors,
+            clears: held.clears,
+            saves: held.saves,
+            live: report(live),
+            disk: report(disk.content.metadata.correxit)
+          };
+        }, order);
+        const success =
+          outcome === 'success' || outcome === 'older encryption failure';
+        const error =
+          outcome === 'both encryption failures'
+            ? 'encryption failure'
+            : outcome;
+        const expected = success
+          ? { points: 1, comment: 'New comment' }
+          : { points: null, comment: null };
+        expect(result).toEqual({
+          errors: success ? [null, null] : [error, error],
+          clears: success ? 1 : 0,
+          saves: success ? 1 : 0,
+          live: expected,
+          disk: expected
+        });
+        if (!success) {
+          // A failed write must not poison later retries of the cached rubric.
+          const retried = await page.evaluate(async () => {
+            const held = (window as any).__correxit_write;
+            const { Workbook, Rubric } = (window as any).__correxit__;
+            const notebook = held.panel.context.model.sharedModel;
+            Rubric.lock = held.lock;
+            notebook.setMetadata = held.write;
+            await Workbook.update(held.panel, Workbook.open(held.panel));
+            return notebook.getMetadata('correxit').assignment.report.scores
+              .cell.comment;
+          });
+          expect(retried).toBe('New comment');
+        }
+      } finally {
+        await page
+          .evaluate(async () => {
+            const held = (window as any).__correxit_write;
+            if (!held) return;
+            held.releases.forEach((release: () => void) => release());
+            await Promise.allSettled([held.intervention, held.comment]);
+            (window as any).__correxit__.Rubric.lock = held.lock;
+            const notebook = held.panel.context.model.sharedModel;
+            notebook.setMetadata = held.write;
+            notebook.clearUndoHistory = held.clear;
+            held.panel.context.save = held.save;
+            delete (window as any).__correxit_write;
+          })
+          .catch(() => {});
+        await dispose();
+      }
+    });
+  }
+}
+
+for (const command of ['lock', 'reset', 'remove', 'dereference']) {
+  test(`${command} reports a failed metadata write before follow-up saves`, async ({
+    page
+  }) => {
+    const { dispose } = await prepare(page, [
+      { id: 'cell', source: 'print(42)' },
+      { id: 'ref', source: 'assert True' }
+    ]);
+    try {
+      await page.evaluate(async command => {
+        const { Workbook, Rubric } = (window as any).__correxit__;
+        const app = (window as any).jupyterapp;
+        const panel = app.shell.currentWidget;
+        const created = Rubric.create();
+        await Workbook.update(
+          panel,
+          Rubric.add(
+            {
+              ...created,
+              key: 'secret',
+              assignment: {
+                ...created.assignment,
+                keys: {
+                  private: { assignee: null, author: 'priv' },
+                  public: { assignee: null, author: 'pub' }
+                }
+              }
+            },
+            {
+              id: 'cell',
+              is: 'correctable',
+              payload: null,
+              points: 1,
+              references: ['ref']
+            },
+            [{ cell: 'cell', referent: 'ref', points: 1, secret: false }]
+          )
+        );
+        const notebook = panel.context.model.sharedModel;
+        const held = ((window as any).__correxit_failure = {
+          panel,
+          lock: Rubric.lock,
+          write: notebook.setMetadata,
+          remove: notebook.deleteMetadata,
+          clear: notebook.clearUndoHistory,
+          save: panel.context.save,
+          encrypted: Promise.resolve(),
+          saves: 0,
+          clears: 0,
+          failures: 0,
+          unhandled: [] as string[],
+          rejection: (event: PromiseRejectionEvent) => {
+            if (event.reason?.message !== 'Metadata write failed') return;
+            held.unhandled.push(event.reason.message);
+            event.preventDefault();
+          }
+        });
+        window.addEventListener('unhandledrejection', held.rejection);
+        Rubric.lock = (...args: any[]) => (held.encrypted = held.lock(...args));
+        const fail = () => {
+          held.failures++;
+          throw new Error('Metadata write failed');
+        };
+        notebook.setMetadata = (key: string, value: any) =>
+          key === 'correxit' ? fail() : held.write.call(notebook, key, value);
+        notebook.deleteMetadata = (key: string) =>
+          key === 'correxit' ? fail() : held.remove.call(notebook, key);
+        notebook.clearUndoHistory = () => held.clears++;
+        panel.context.save = async () => {
+          held.saves++;
+        };
+        (held as any).done = app.commands
+          .execute(`correxit:${command}`, { id: 'cell', referent: 'ref' })
+          .then(
+            () => null,
+            (error: Error) => error.message
+          );
+      }, command);
+      if (command === 'reset')
+        await page.locator('.jp-Dialog button.jp-mod-accept').click();
+      const result = await page.evaluate(async () => {
+        const held = (window as any).__correxit_failure;
+        const error = await held.done;
+        await held.encrypted;
+        await new Promise(resolve => window.setTimeout(resolve, 0));
+        const { saves, clears, failures, unhandled } = held;
+        return { error, saves, clears, failures, unhandled };
+      });
+      expect(result).toEqual({
+        error: command === 'lock' ? null : 'Metadata write failed',
+        saves: 0,
+        clears: 0,
+        failures: 1,
+        unhandled: []
+      });
+      if (command === 'lock') {
+        await expect(page.locator('.jp-Dialog')).toContainText(
+          'Metadata write failed'
+        );
+        await page.getByRole('button', { name: 'Close', exact: true }).click();
+      }
+    } finally {
+      await page
+        .evaluate(() => {
+          const held = (window as any).__correxit_failure;
+          if (!held) return;
+          const notebook = held.panel.context.model.sharedModel;
+          (window as any).__correxit__.Rubric.lock = held.lock;
+          notebook.setMetadata = held.write;
+          notebook.deleteMetadata = held.remove;
+          notebook.clearUndoHistory = held.clear;
+          held.panel.context.save = held.save;
+          window.removeEventListener('unhandledrejection', held.rejection);
+          delete (window as any).__correxit_failure;
+        })
+        .catch(() => {});
+      await dispose();
+    }
+  });
+}
 
 test('correction without a rubric returns an unverified result', async ({
   page

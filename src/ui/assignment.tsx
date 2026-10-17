@@ -1,8 +1,10 @@
 import { IRenderMime } from '@jupyterlab/rendermime';
 import { CommandToolbarButtonComponent } from '@jupyterlab/ui-components';
 import { CommandRegistry } from '@lumino/commands';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { Correxit, Rubric, Workbook } from '..';
+import { Draft } from './draft';
+import type * as drafts from './drafts';
 
 type Assignment = Rubric.Assignment;
 type Registered = Awaited<ReturnType<Correxit.Registrar>>;
@@ -15,29 +17,30 @@ type Registration = Rubric.Assignment.Registration;
 type Course = { assignments: Registration[]; group: string };
 type TranslationBundle = IRenderMime.TranslationBundle;
 
-const DELAY = 150;
 const TTL = 10_000;
-const { assign, enroll, resource, track } = Correxit.CommandIDs;
+const { enroll, resource, track } = Correxit.CommandIDs;
 const { Equal } = Rubric.Assignment;
 const enrolled = new WeakMap<Workbook, Enrolled>();
 const identify = ({ id, name }: Registration) => id || name;
-const blank = (assignment: Assignment): Assignment => ({
-  ...assignment,
+const blank: Partial<Draft.Fields> = {
   assignee: '',
   expiration: null,
   id: null,
   name: '',
   overdue: null,
   penalty: null,
-  roster: []
-});
-const equal = Equal.assignment;
-const freeze = (assignment: Assignment, active: Registration): Assignment => ({
-  ...assignment,
-  ...active,
-  assignee: active.roster.includes(assignment.assignee)
-    ? assignment.assignee
-    : '',
+  roster: ''
+};
+const freeze = ({
+  expiration,
+  id,
+  name,
+  roster
+}: Registration): Partial<Draft.Fields> => ({
+  expiration,
+  id,
+  name,
+  roster: roster.join('\n'),
   overdue: null,
   penalty: null
 });
@@ -49,17 +52,6 @@ const courses = (registered: Registered): Course[] | null =>
       : [{ assignments: registered as Registration[], group: '' }];
 const flat = (course: Course[]): Registration[] =>
   course.flatMap(({ assignments }) => assignments);
-const split = (value: string) =>
-  Array.from(
-    new Set(
-      value
-        .split('\n')
-        .map(line => line.trim())
-        .filter(Boolean)
-    )
-  );
-const same = (x: string[], y: string[]) =>
-  x.length === y.length && x.every((record, i) => record === y[i]);
 
 const count = ({ roster }: Assignment, trans: TranslationBundle) =>
   trans.__('%1 entries', roster.length);
@@ -88,68 +80,36 @@ const option = (registration: Registration) => (
   </option>
 );
 
-namespace Draft {
-  export type State = Readonly<{
-    assignment: Assignment;
-    local: boolean;
-  }>;
-
-  export function create(assignment: Assignment): State {
-    return { assignment, local: false };
-  }
-
-  export function edit(state: State, assignment: Assignment): State {
-    return equal(state.assignment, assignment)
-      ? state
-      : { assignment, local: true };
-  }
-
-  export function merge(
-    state: State,
-    mutate: (assignment: Assignment) => Assignment
-  ): State {
-    return edit(state, mutate(state.assignment));
-  }
-
-  export function persist(
-    state: State,
-    assignment: Assignment,
-    locked: boolean
-  ): boolean {
-    return state.local && !locked && !equal(state.assignment, assignment);
-  }
-
-  export function sync(state: State, assignment: Assignment): State {
-    return equal(state.assignment, assignment)
-      ? state.local
-        ? { ...state, local: false }
-        : state
-      : { assignment, local: false };
-  }
-}
-
 export const Assignment: React.FC<{
   commands: CommandRegistry;
+  editor: drafts.Editor;
   trans: TranslationBundle;
   workbook: Workbook;
-}> = ({ commands, trans, workbook }) => {
+}> = ({ commands, editor, trans, workbook }) => {
   const rubric = Workbook.open(workbook, true)!;
+  return (
+    <Editor
+      key={`${editor.key}:${workbook.context.path}:${rubric.id}`}
+      {...{ commands, editor, trans, workbook, rubric }}
+    />
+  );
+};
+
+const Editor: React.FC<{
+  commands: CommandRegistry;
+  editor: drafts.Editor;
+  trans: TranslationBundle;
+  workbook: Workbook;
+  rubric: Rubric;
+}> = ({ commands, editor, trans, workbook, rubric }) => {
   const { locked } = rubric;
-  const [state, setState] = useState(() => Draft.create(rubric.assignment));
+  const state = useSyncExternalStore(editor.subscribe, editor.read);
   const [registered, setRegistered] = useState<Registered>(null);
   const [overwrite, setOverwrite] = useState(false);
   const [pending, setPending] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
-  const { assignment, local } = state;
+  const assignment = locked ? rubric.assignment : Draft.view(state);
   const cached = rubric.id;
-  const keep = (next: Assignment) =>
-    setState(current => Draft.sync(current, next));
-  const edit = (assignment: Assignment) =>
-    setState(current => Draft.edit(current, assignment));
-  const merge = (mutate: (assignment: Assignment) => Assignment) =>
-    setState(current => Draft.merge(current, mutate));
-  const pick = (next: string | null) =>
-    setSelected(current => (current === next ? current : next));
+  const { edit } = editor;
   useEffect(() => {
     const store = (next: Registered) =>
       setRegistered(current =>
@@ -172,49 +132,20 @@ export const Assignment: React.FC<{
     };
     void request();
   }, [cached, commands, workbook]);
-  useEffect(() => keep(rubric.assignment), [rubric.assignment]);
   useEffect(() => {
     if (locked) return;
 
+    // Initialize from registrar changes; ordinary draft updates only affect display.
     const resolved = courses(registered);
     const roster = resolved ? flat(resolved) : null;
-    if (roster === null) {
-      pick(null);
-      return;
-    }
-    if (!roster.length) {
-      pick(null);
-      merge(blank);
-      return;
-    }
-
-    const matched = selected
-      ? roster.find(r => identify(r) === selected)
-      : selected === ''
-        ? null
-        : roster.find(record => identify(record) === rubric.assignment.id) ||
-          (roster.length === 1 ? roster[0] : null);
-    if (!matched) {
-      if (selected !== '') pick(null);
-      merge(blank);
-      return;
-    }
-    pick(identify(matched));
-    merge(current => freeze(current, matched));
-  }, [locked, registered, rubric.assignment.id, selected]);
-  useEffect(() => {
-    const dirty = Draft.persist(
-      { assignment, local },
-      rubric.assignment,
-      locked
-    );
-    if (!dirty) return;
-
-    const delay = window.setTimeout(() => {
-      void commands.execute(assign, assignment).catch(_ => {});
-    }, DELAY);
-    return () => window.clearTimeout(delay);
-  }, [assignment, commands, local, locked, rubric.assignment]);
+    if (roster === null) return;
+    const assignment = Draft.view(editor.read());
+    const matched =
+      roster.find(
+        record => identify(record) === (assignment.id || assignment.name)
+      ) || (roster.length === 1 ? roster[0] : null);
+    editor.edit(matched ? freeze(matched) : blank);
+  }, [editor, locked, registered]);
 
   const all =
     courses(registered) ??
@@ -222,14 +153,32 @@ export const Assignment: React.FC<{
   const roster = all ? flat(all) : null;
   const manual = roster === null;
   const multiple = !!roster && roster.length > 1;
+  const selected = roster?.find(
+    record => identify(record) === (assignment.id || assignment.name)
+  );
+  const select = (id: string) => {
+    const matched = roster?.find(record => identify(record) === id);
+    editor.select(matched ? freeze(matched) : blank);
+  };
   if (pending) return <div className="correxit-assignment cxt-mod-pending" />;
   return (
     <div className="correxit-assignment">
       <Facts {...{ assignment, manual, trans }} />
+      {!locked && state.phase === 'failed' && (
+        <div className="correxit-assignment-hint" role="status">
+          {trans.__('Assignment changes could not be saved.')}{' '}
+          <button onClick={editor.retry} type="button">
+            {trans.__('Retry')}
+          </button>
+        </div>
+      )}
       <div className="correxit-assignment-controls">
         {manual ? (
           <>
-            <Roster {...{ assignment, edit, locked, trans }} />
+            <Roster
+              {...{ assignment, edit, locked, trans }}
+              value={state.fields.roster}
+            />
             <Assignee {...{ assignment, edit, locked, trans }} />
           </>
         ) : (
@@ -241,8 +190,8 @@ export const Assignment: React.FC<{
               locked,
               multiple,
               registered: roster,
-              selected,
-              setSelected,
+              selected: selected ? identify(selected) : '',
+              select,
               trans
             }}
           />
@@ -317,7 +266,7 @@ const Facts: React.FC<{
 
 const Assignee: React.FC<{
   assignment: Assignment;
-  edit: (assignment: Assignment) => void;
+  edit: (update: Partial<Draft.Fields>) => void;
   locked: boolean;
   trans: TranslationBundle;
 }> = ({ assignment, edit, locked, trans }) => {
@@ -348,9 +297,7 @@ const Assignee: React.FC<{
           disabled={!roster.length}
           id={id}
           name="correxit-assignment-assignee"
-          onChange={({ target: { value } }) =>
-            edit({ ...assignment, assignee: value })
-          }
+          onChange={({ target: { value } }) => edit({ assignee: value })}
           value={assignee}
         >
           <option value="">
@@ -369,7 +316,7 @@ const Assignee: React.FC<{
 
 const Expiration: React.FC<{
   assignment: Assignment;
-  edit: (assignment: Assignment) => void;
+  edit: (update: Partial<Draft.Fields>) => void;
   locked: boolean;
   trans: TranslationBundle;
 }> = ({ assignment, edit, locked, trans }) => {
@@ -399,7 +346,6 @@ const Expiration: React.FC<{
   const update = (value: string) => {
     const expiration = value ? new Date(value).getTime() : null;
     edit({
-      ...assignment,
       expiration,
       overdue: expiration === null ? null : assignment.overdue,
       penalty: expiration === null ? null : assignment.penalty
@@ -425,7 +371,7 @@ const Expiration: React.FC<{
 
 const Overdue: React.FC<{
   assignment: Assignment;
-  edit: (assignment: Assignment) => void;
+  edit: (update: Partial<Draft.Fields>) => void;
   locked: boolean;
   trans: TranslationBundle;
 }> = ({ assignment, edit, locked, trans }) => {
@@ -452,7 +398,6 @@ const Overdue: React.FC<{
 
   const update = (overdue: Exclude<Assignment['overdue'], null>) => {
     edit({
-      ...assignment,
       overdue,
       penalty: overdue === 'dock' ? (assignment.penalty ?? 10) : null
     });
@@ -460,10 +405,12 @@ const Overdue: React.FC<{
   const penalty = (value: string) => {
     setText(value);
     if (!value.trim()) return;
+
     const parsed = Number(value);
     if (!Number.isInteger(parsed)) return;
+
     const penalty = Math.max(0, Math.min(100, parsed));
-    edit({ ...assignment, overdue: 'dock', penalty });
+    edit({ overdue: 'dock', penalty });
   };
   const reset = () => setText(String(assignment.penalty ?? 10));
   return (
@@ -511,28 +458,14 @@ const Overdue: React.FC<{
 
 const Roster: React.FC<{
   assignment: Assignment;
-  edit: (assignment: Assignment) => void;
+  edit: (update: Partial<Draft.Fields>) => void;
   locked: boolean;
   trans: TranslationBundle;
-}> = ({ assignment, edit, locked, trans }) => {
+  value: string;
+}> = ({ assignment, edit, locked, trans, value }) => {
   const id = 'correxit-assignment-roster';
   const hint = `${id}-hint`;
   const seed = assignment.roster.join('\n');
-  const [value, setValue] = useState<string>(seed);
-  useEffect(() => {
-    if (same(split(value), assignment.roster)) return;
-    setValue(seed);
-  }, [assignment.roster, seed, value]);
-
-  const update = (value: string) => {
-    const roster = split(value);
-    setValue(value);
-    edit({
-      ...assignment,
-      assignee: roster.includes(assignment.assignee) ? assignment.assignee : '',
-      roster
-    });
-  };
 
   if (locked) {
     const title = seed || undefined;
@@ -567,8 +500,8 @@ const Roster: React.FC<{
           id={id}
           data-lm-suppress-shortcuts="true"
           name="correxit-assignment-roster"
-          onBlur={() => setValue(assignment.roster.join('\n'))}
-          onChange={({ target: { value } }) => update(value)}
+          onBlur={() => edit({ roster: seed })}
+          onChange={({ target: { value } }) => edit({ roster: value })}
           rows={6}
           spellCheck={false}
           value={value}
@@ -644,8 +577,8 @@ const Enrollment: React.FC<{
   locked: boolean;
   multiple: boolean;
   registered: Registration[];
-  selected: string | null;
-  setSelected: (id: string) => void;
+  selected: string;
+  select: (id: string) => void;
   trans: TranslationBundle;
 }> = props => {
   const {
@@ -656,7 +589,7 @@ const Enrollment: React.FC<{
     multiple,
     registered,
     selected,
-    setSelected,
+    select,
     trans
   } = props;
   if (!registered.length) {
@@ -683,8 +616,8 @@ const Enrollment: React.FC<{
               disabled={!!assignee}
               id="correxit-assignment-registration"
               name="correxit-assignment-registration"
-              onChange={({ target: { value } }) => setSelected(value)}
-              value={selected ?? ''}
+              onChange={({ target: { value } }) => select(value)}
+              value={selected}
             >
               <option value="">{trans.__('No assignment')}</option>
               {all.some(({ group }) => group)

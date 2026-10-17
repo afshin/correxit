@@ -2,27 +2,36 @@ import { IRenderMime } from '@jupyterlab/rendermime';
 import { ISettingRegistry } from '@jupyterlab/settingregistry';
 import { ReactWidget } from '@jupyterlab/ui-components';
 import { CommandRegistry } from '@lumino/commands';
+import { Message } from '@lumino/messaging';
 import React from 'react';
 import { Correxit, Workbook } from '..';
 import * as state from '../correxit/state';
 import { Boundary, Sidebar } from '.';
+import * as drafts from './drafts';
 
 export class SidebarWidget extends ReactWidget {
   constructor({ commands, monitor, settings, trans }: SidebarWidget.IOptions) {
     super();
     this.addClass('correxit-sidebar');
     this.commands = commands;
+    this.drafts = drafts.create(commands);
     this.trans = trans;
     state.refreshed.connect(this.update, this);
     void this.initialize(settings);
     void this.subscribe(monitor);
   }
 
-  protected annotate = true;
-
   readonly trans: IRenderMime.TranslationBundle;
 
+  protected active: Workbook | null = null;
+
+  protected annotate = true;
+
   protected commands: CommandRegistry;
+
+  protected drafts: ReturnType<typeof drafts.create>;
+
+  protected editor: drafts.Editor | null = null;
 
   protected get workbook(): Workbook | null {
     return this.active;
@@ -50,6 +59,12 @@ export class SidebarWidget extends ReactWidget {
     this.update();
   }
 
+  dispose() {
+    if (this.isDisposed) return;
+    this.drafts.dispose();
+    super.dispose();
+  }
+
   protected async initialize(pending: SidebarWidget.IOptions['settings']) {
     const settings = await pending;
     if (settings) {
@@ -60,13 +75,18 @@ export class SidebarWidget extends ReactWidget {
     }
   }
 
+  protected onUpdateRequest(message: Message) {
+    this.editor = this.drafts.open(this.workbook);
+    super.onUpdateRequest(message);
+  }
+
   protected render() {
-    const { annotate, commands, trans, workbook } = this;
+    const { annotate, commands, editor, trans, workbook } = this;
     const label = trans.__('Something went wrong rendering the sidebar.');
     const key = workbook ? workbook.context.path : 'idle';
     return (
       <Boundary key={key} label={label}>
-        <Sidebar {...{ annotate, commands, trans, workbook }} />
+        <Sidebar {...{ annotate, commands, editor, trans, workbook }} />
       </Boundary>
     );
   }
@@ -77,8 +97,6 @@ export class SidebarWidget extends ReactWidget {
       this.workbook = workbook;
     }
   }
-
-  protected active: Workbook | null = null;
 }
 
 export namespace SidebarWidget {

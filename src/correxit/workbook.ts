@@ -9,6 +9,7 @@ import {
 } from '@jupyterlab/notebook';
 import { KernelSpec } from '@jupyterlab/services';
 import { findIndex, range } from '@lumino/algorithm';
+import { PromiseDelegate } from '@lumino/coreutils';
 import { IRenderMime } from '@jupyterlab/rendermime';
 import { Assignment, Correxit, Rubric } from '.';
 import * as certificate from './certificate';
@@ -265,12 +266,40 @@ export namespace Workbook {
       cell.transact(() => cell.setMetadata('editable', false));
 
   };
-  const [get, set] = (pool => {
-    const get = (workbook: Workbook) => pool.get(workbook) || null;
-    const set = (workbook: Workbook, rubric: Rubric | null) =>
-      pool.set(workbook, rubric).has(workbook);
-    return [get, set];
-  })(new WeakMap<Workbook, Rubric | null>());
+  const [get, set, generation] = (pool => {
+    // Cloned views share both the latest rubric and persistence ownership.
+    const get = (workbook: Workbook) =>
+      pool.get(workbook.context.model.sharedModel)?.rubric ?? null;
+    const generation = (workbook: Workbook) =>
+      pool.get(workbook.context.model.sharedModel)?.generation ?? 0;
+    const set = (workbook: Workbook, rubric: Rubric | null) => {
+      // A lock boundary invalidates signing saves, even after unlocking again.
+      const next = generation(workbook) +
+        (get(workbook)?.locked !== rubric?.locked ? 1 : 0);
+      pool.set(workbook.context.model.sharedModel, { rubric, generation: next });
+    };
+    return [get, set, generation] as const;
+  })(new WeakMap<INotebookModel['sharedModel'], {
+    rubric: Rubric | null;
+    generation: number;
+  }>());
+  const writes = new WeakMap<INotebookModel['sharedModel'], Promise<void>>();
+  const failed = new WeakSet<Promise<void>>();
+  const settled = async (
+    workbook: Workbook,
+    pending = writes.get(workbook.context.model.sharedModel)
+  ): Promise<void> => {
+    const notebook = workbook.context.model.sharedModel;
+    while (pending) {
+      try { await pending; }
+      catch (error) {
+        if (pending === writes.get(notebook)) throw error;
+      }
+      const latest = writes.get(notebook);
+      if (pending === latest) return;
+      pending = latest;
+    }
+  };
   const stale = (
     assignment: Rubric.Assignment,
     {
@@ -453,9 +482,22 @@ export namespace Workbook {
   ): Promise<Rubric.Unlocked> {
     const rubric = open(workbook, quiet);
     if (!rubric || rubric.locked) throw new Error.Invalid('assign error');
-    return stale(rubric.assignment, assignment)
-      ? update(workbook, await Rubric.assign(rubric, assignment))
-      : rubric;
+    if (!stale(rubric.assignment, assignment)) {
+      const pending = writes.get(workbook.context.model.sharedModel);
+      // Matching the optimistic cache is not proof that metadata was written.
+      if (pending && failed.has(pending)) return update(workbook, rubric);
+      await settled(workbook, pending);
+      return rubric;
+    }
+    const started = generation(workbook);
+    const assigned = await Rubric.assign(rubric, assignment);
+    const latest = open(workbook, quiet);
+    if (latest?.id !== rubric.id || generation(workbook) !== started)
+      throw new Error.Invalid('assign error: workbook changed');
+    // Rebase the patch if another command changed the rubric while signing.
+    return latest === rubric
+      ? update(workbook, assigned)
+      : assign(workbook, assignment);
   }
 
   /**
@@ -775,14 +817,14 @@ export namespace Workbook {
   }
 
   /** Remove a single reference from a cell. */
-  export function dereference(
+  export async function dereference(
     workbook: Workbook,
     referent: string
-  ): void {
+  ): Promise<void> {
     const rubric = open(workbook, quiet);
     if (!rubric || rubric.locked)
       throw new Error.Invalid('dereference error, invalid rubric');
-    update(workbook, Rubric.dereference(rubric, referent));
+    await update(workbook, Rubric.dereference(rubric, referent));
   }
 
   /** Revert a submission to draft, restoring cell editability. */
@@ -877,7 +919,7 @@ export namespace Workbook {
       secrets.map(({ referent }) => Cell.encrypt(workbook, referent, key))
     );
     transact(workbook, prepared);
-    update(workbook, locked, { ok: true, rubric: locked });
+    await update(workbook, locked, { ok: true, rubric: locked });
   }
 
   /**
@@ -1046,12 +1088,12 @@ export namespace Workbook {
   }
 
   /** Remove a cell from a workbook's rubric. */
-  export function remove(workbook: Workbook, id: string): void {
+  export async function remove(workbook: Workbook, id: string): Promise<void> {
     const rubric = open(workbook, quiet);
     if (!rubric || rubric.locked)
       throw new Error.Invalid('remove error, invalid rubric');
 
-    update(workbook, Rubric.remove(rubric, id));
+    await update(workbook, Rubric.remove(rubric, id));
   }
 
   /**
@@ -1073,7 +1115,7 @@ export namespace Workbook {
 
   /** Reset a workbook back to a plain Jupyter notebook. */
   export async function reset(workbook: Workbook) {
-    update(workbook, null);
+    await update(workbook, null);
   }
 
   /** Revise a sealed submission: unseal cells and clear submission state. */
@@ -1226,6 +1268,10 @@ export namespace Workbook {
    *
    * If the given rubric passes an audit, which may prune broken cells, it is
    * locked and written to the notebook metadata `correxit` key.
+   * Superseded updates wait for the latest metadata write, including failures.
+   * Completion follows that write; the returned rubric is this invocation's
+   * audited snapshot and may already have been superseded. This does not save
+   * the notebook file or serialize mutations performed before calling update.
    *
    * The audited rubric is returned.
    */
@@ -1246,15 +1292,27 @@ export namespace Workbook {
     audited = audit(workbook, rubric)
   ): Promise<Rubric | null> {
     const notebook = workbook.context.model.sharedModel;
-    if (!audited || !rubric) {
-      set(workbook, null);
-      notebook.deleteMetadata('correxit');
-      notebook.clearUndoHistory();
-      return null;
+    if (rubric && audited && !audited.ok)
+      throw new Error.Invalid(`update error: ${audited.error}`);
+    const current = rubric && audited ? audited.rubric : null;
+    const write = new PromiseDelegate<void>();
+    writes.set(notebook, write.promise);
+    try {
+      set(workbook, current);
+      if (current) {
+        const locked = await Rubric.lock(current);
+        // A newer update owns persistence, even if this encryption finishes last.
+        if (get(workbook) === current) notebook.setMetadata('correxit', locked);
+      } else {
+        notebook.deleteMetadata('correxit');
+        notebook.clearUndoHistory();
+      }
+      write.resolve();
+    } catch (error) {
+      failed.add(write.promise);
+      write.reject(error);
     }
-    if (!audited.ok) throw new Error.Invalid(`update error: ${audited.error}`);
-    set(workbook, audited.rubric);
-    notebook.setMetadata('correxit', await Rubric.lock(audited.rubric));
-    return audited.rubric;
+    await settled(workbook, write.promise);
+    return current;
   }
 }

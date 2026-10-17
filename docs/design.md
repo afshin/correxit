@@ -73,6 +73,25 @@ The architecture is divided into three layers:
 components are declarative. They render state and execute commands, but never
 call model functions directly.
 
+### Assignment drafts
+
+Assignment editing separates pure transitions (`src/ui/draft.ts`) from the
+controller (`src/ui/drafts.ts`), which owns debounce, notebook subscriptions,
+and command execution. `SidebarWidget` owns the controllers; React reads their
+snapshots through `useSyncExternalStore` and submits edits.
+
+Each notebook view keeps its own draft across tab switches. Lock boundaries
+reset drafts; owner disposal or rubric replacement releases them. Each save
+records its identity and submitted fields, so its completion cannot acknowledge
+a replacement draft or discard later edits.
+
+Drafts preserve explicit intent separately from observed state, including
+reversions to an earlier value. Roster formatting and automatic assignee
+normalization remain separate from input history. Coupled choices, such as
+late policy and penalty or a registration's fields, save together. Registrar
+initialization is separate from user selection. Failed saves retain edits for
+retry or new input, without repeatedly retrying unchanged failures.
+
 ## Data model: `Rubric` (`rubric.ts`)
 
 The central data structure is the `Rubric`, stored in notebook metadata under
@@ -119,16 +138,35 @@ scanning.
 ### Caching
 
 `workbook.ts` uses a `WeakMap` to cache the current `Rubric` instance, avoiding
-repeated decryption. `state.ts` maintains an in-memory `Map` of cell scores
-with FIFO eviction, the active reviewer cursor cell, and a `refreshed` signal
-that triggers sidebar re-renders when cursor or state changes.
+repeated decryption. Cloned views share this cache and metadata-write ownership.
+`state.ts` maintains an in-memory `Map` of cell scores with FIFO eviction, the
+active reviewer cursor cell, and a `refreshed` signal that triggers sidebar
+re-renders when cursor or state changes.
+
+### Persistence
+
+Workbook mutations must propagate the promise from `Workbook.update()`. The
+cache is optimistic: matching it does not prove metadata was written.
+Superseded updates follow the latest metadata write's outcome. The returned
+rubric is the invocation's audited snapshot and may already have been superseded.
+
+Assignment signing rebases ordinary concurrent changes and rejects rubric
+replacement or a lock/unlock boundary. This is narrower than serializing every
+model operation.
+
+Writing metadata and saving the notebook file are separate. Commands perform
+follow-up saves and undo-history clearing only after metadata succeeds, using
+the context they resolved at the start.
 
 ### Active workbook
 
 Command arguments must be serializable. Synchronous command logic (`isEnabled`,
 `isVisible`) resolves the current workbook and cell via `state.workbook()` and
 `state.cell()`. Async `execute` functions use `reify()` to resolve a workbook
-by checking state and/or fetching when appropriate.
+by checking state and/or fetching when appropriate. Draft saves identify their
+originating view or a headless context retained for the draft's lifetime;
+expired identifiers never fall back to another workbook. Path-only commands
+continue to fetch a fresh headless context.
 
 Use `Workbook.open()` to retrieve the current rubric.
 
