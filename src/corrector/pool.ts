@@ -4,12 +4,12 @@ export async function* pool<T>(
   cap: number,
   signal: AbortSignal | null = null
 ): AsyncGenerator<T> {
-  const iterator = source[Symbol.asyncIterator]();
   type Job = { iterator: AsyncGenerator<T>; pending: Promise<Ready> };
   type Ready =
     | { type: 'source'; result: IteratorResult<AsyncGenerator<T>> }
     | { type: 'job'; job: Job; result: IteratorResult<T> }
     | { type: 'stop' };
+  const iterator = source[Symbol.asyncIterator]();
   const jobs = new Set<Job>();
   let reading: Promise<Ready> | null = null;
   let ended = false;
@@ -29,10 +29,12 @@ export async function* pool<T>(
         jobs.size < Math.max(1, cap)
       )
         reading = iterator.next().then(result => ({ type: 'source', result }));
+
       const waiting = Array.from(jobs, job => job.pending);
       if (reading && !signal?.aborted) waiting.push(reading);
       if (!signal?.aborted) waiting.push(stopped);
       if (!waiting.length) break;
+
       const ready = await Promise.race(waiting);
       if (ready.type === 'stop') continue;
       if (ready.type === 'source') {
@@ -45,6 +47,7 @@ export async function* pool<T>(
         }
         continue;
       }
+
       const { job, result } = ready;
       if (result.done) {
         jobs.delete(job);
