@@ -1,20 +1,3 @@
-# 2.4.0
-
-### Corrector
-
-- Use one discovery pass for the table and batch processing, and deliver
-  completed grades while other notebook reads are still pending.
-- Add contextual Scan, Grade, and Sync controls, with Submitted only, Regrade,
-  and Resync options and explicit action buttons.
-- Stop scheduling new work while active workbooks finish and save. Preserve
-  completed results and release contexts safely when closing Corrector.
-- Show persistent progress summaries, empty and error states, and distinct
-  queued, processing, unverified, review, certified, and synced statuses.
-- Show the Correxit icon and current folder in the tab, keep folder and CSV
-  controls compact, and support reduced motion.
-- Keep authenticated grading, CSV provenance, collector interfaces, and the
-  format-2 notebook contract unchanged.
-
 # 2.3.1
 
 <!-- START GENERATED CHANGELOG: 2.3.1 -->

@@ -185,20 +185,22 @@ for (const environment of ['Lab', 'Lite']) {
                 gap = Math.max(gap, now - last);
                 last = now;
               }, 16);
+              const instrument = (kernel: any): any => {
+                const execute = kernel.requestExecute.bind(kernel);
+                const clone = kernel.clone.bind(kernel);
+                kernel.requestExecute = (...args: any[]) => {
+                  const timing = (window as any).__correctorTiming;
+                  if (timing)
+                    timing.marks.firstExecution ??=
+                      performance.now() - timing.start;
+                  return execute(...args);
+                };
+                kernel.clone = (...args: any[]) => instrument(clone(...args));
+                return kernel;
+              };
               sessions.startNew = async (...args: any[]) => {
                 const session = await startNew(...args);
-                if (session.kernel) {
-                  const execute = session.kernel.requestExecute.bind(
-                    session.kernel
-                  );
-                  session.kernel.requestExecute = (...args: any[]) => {
-                    const timing = (window as any).__correctorTiming;
-                    if (timing)
-                      timing.marks.firstExecution ??=
-                        performance.now() - timing.start;
-                    return execute(...args);
-                  };
-                }
+                if (session.kernel) instrument(session.kernel);
                 return session;
               };
               const execute = app.commands.execute.bind(app.commands);
@@ -295,6 +297,8 @@ for (const environment of ['Lab', 'Lite']) {
           expect(measured.failures).toBe(0);
           expect(measured.results).toBe(size);
           expect(measured.firstVisible).not.toBeNull();
+          if (overwrite) expect(measured.firstExecution).not.toBeNull();
+          else expect(measured.firstExecution).toBeNull();
           results.push({
             environment,
             size,

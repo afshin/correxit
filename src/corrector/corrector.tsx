@@ -305,12 +305,17 @@ export function Corrector(props: Corrector.Props) {
   const { workbooks, grades, phases, errors } = summary;
   const idle = summary.done && settled;
   const walk = useWalk(workbooks);
-  const workbook = useMemo(
+  const available = useMemo(
     () =>
-      phases.get(walk.selected) === 'processing'
-        ? null
-        : match(workbooks, walk.selected),
-    [phases, walk.selected, workbooks]
+      workbooks.filter(
+        ({ context }) =>
+          mode === 'scan' || summary.done || grades.has(context.path)
+      ),
+    [grades, mode, summary.done, workbooks]
+  );
+  const workbook = useMemo(
+    () => match(available, walk.selected),
+    [available, walk.selected]
   );
   const message = describe(summary, mode, stopping, trans);
   useEffect(
@@ -319,19 +324,16 @@ export function Corrector(props: Corrector.Props) {
     },
     [commands, run]
   );
-  useEffect(
-    () => () => {
-      bridge.clear();
-      bridge.inject(commands, null);
-    },
-    [commands]
-  );
+  useEffect(() => bridge.clear, []);
   useEffect(() => bridge.inject(commands, workbook), [commands, workbook]);
   useEffect(
     () => notify({ graded: idle, scanned: idle, mode, message }),
     [idle, message, mode, notify]
   );
-  useEffect(() => bridge.publish({ workbooks, grades }), [grades, workbooks]);
+  useEffect(
+    () => bridge.publish({ workbooks: available, grades }),
+    [available, grades]
+  );
   const empty = idle && !workbooks.length && !summary.error;
   return (
     <table

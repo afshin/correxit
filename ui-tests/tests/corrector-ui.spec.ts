@@ -1443,6 +1443,229 @@ test('corrector reports a directory error and recovers through folder selection'
   await close(page);
 });
 
+test('closing corrector preserves the active notebook monitor', async ({
+  page
+}) => {
+  const { dispose } = await setup(page, [
+    { id: 'ref', source: 'print(42)' },
+    { id: 'target', source: 'print(42)' }
+  ]);
+  const propagated = await propagate(page, ['alice@example.com']);
+  const id = await page.evaluate(
+    () => (window as any).jupyterapp.shell.currentWidget.id
+  );
+  try {
+    await launch(page, propagated.directory);
+    await expect(
+      page.getByRole('button', { name: 'Scan', exact: true })
+    ).toBeEnabled();
+    await page.evaluate(
+      id => (window as any).jupyterapp.shell.activateById(id),
+      id
+    );
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (window as any).jupyterapp.commands.isEnabled('correxit:lock')
+        )
+      )
+      .toBe(true);
+    await page.evaluate(async () => {
+      const app = (window as any).jupyterapp;
+      const widget = Array.from(app.shell.widgets('main')).find(
+        (widget: any) => widget.id === 'correxit-corrector-widget'
+      ) as any;
+      const run = widget.content.run;
+      widget.dispose();
+      await app.commands.execute('correxit-corrector:stop', {
+        run,
+        release: true
+      });
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (window as any).jupyterapp.commands.isEnabled('correxit:lock')
+        )
+      )
+      .toBe(true);
+  } finally {
+    await close(page);
+    await cleanup(page, propagated);
+    await dispose();
+  }
+});
+
+test('releasing a run clears only its own monitored context', async ({
+  page
+}) => {
+  const { dispose } = await setup(page, [
+    { id: 'ref', source: 'print(42)' },
+    { id: 'target', source: 'print(42)' }
+  ]);
+  const propagated = await propagate(page, ['alice@example.com']);
+  try {
+    for (const owned of [false, true]) {
+      const result = await page.evaluate(
+        async ({ directory, owned }) => {
+          const app = (window as any).jupyterapp;
+          const run = `ownership-${owned}`;
+          const stream = await app.commands.execute('correxit-corrector:run', {
+            run,
+            path: directory,
+            mode: 'scan',
+            key: 'secret'
+          });
+          let workbook: any = null;
+          for await (const event of stream)
+            if (event.type === 'read') workbook = event.workbook;
+          // The same path in a different context is still owned by its caller.
+          const monitored = owned
+            ? workbook
+            : await app.commands.execute('correxit:fetch', {
+                path: workbook.context.path,
+                key: 'secret'
+              });
+          const inject = await app.commands.execute('correxit:inject');
+          inject(monitored);
+          await app.commands.execute('correxit-corrector:stop', {
+            run,
+            release: true
+          });
+          const result = {
+            enabled: app.commands.isEnabled('correxit:assign'),
+            disposed: workbook.context.isDisposed,
+            monitored: monitored.context.isDisposed
+          };
+          (await app.commands.execute('correxit:inject'))(null);
+          if (!owned) monitored.context.dispose();
+          return result;
+        },
+        { directory: propagated.directory, owned }
+      );
+      expect(result).toEqual({
+        enabled: !owned,
+        disposed: true,
+        monitored: owned
+      });
+    }
+  } finally {
+    await cleanup(page, propagated);
+    await dispose();
+  }
+});
+
+test('reviewer skips processing workbooks and opens their finished contents', async ({
+  page
+}) => {
+  const { dispose } = await setup(page, [
+    { id: 'ref', source: 'print(42)' },
+    { id: 'target', source: 'print(42)' }
+  ]);
+  const propagated = await propagate(page, [
+    'alice@example.com',
+    'bob@example.com'
+  ]);
+  await launch(page, propagated.directory);
+  const widget = page.locator('#correxit-corrector-widget');
+  await expect(
+    widget.getByRole('button', { name: 'Scan', exact: true })
+  ).toBeEnabled();
+  await page.evaluate(async paths => {
+    const app = (window as any).jupyterapp;
+    const { Workbook } = (window as any).__correxit__;
+    const opened = await app.commands.execute('correxit:fetch', {
+      path: paths[0],
+      key: 'secret'
+    });
+    opened.context.dispose();
+    const sealed = await app.commands.execute('correxit:fetch', {
+      path: paths[1],
+      unlock: false
+    });
+    await Workbook.submit(sealed, [
+      Workbook.open(sealed).assignment.keys.public.author
+    ]);
+    await sealed.context.save();
+    sealed.context.dispose();
+    const certify = Workbook.certify;
+    const held = { certify, release: null as (() => void) | null };
+    (window as any).__reviewingCorrector = held;
+    Workbook.certify = async (workbook: any, ...args: any[]) => {
+      if (Workbook.open(workbook).assignment.assignee === 'bob@example.com')
+        await new Promise<void>(resolve => {
+          held.release = resolve;
+        });
+      return certify(workbook, ...args);
+    };
+  }, propagated.paths);
+  try {
+    await widget.getByRole('radio', { name: 'Grade', exact: true }).check();
+    await widget.getByRole('button', { name: 'Grade', exact: true }).click();
+    await expect
+      .poll(() =>
+        page.evaluate(() => !!(window as any).__reviewingCorrector.release)
+      )
+      .toBe(true);
+    await expect(widget.locator('.cxt-mod-certified')).toHaveCount(1);
+    await widget
+      .locator('tr[data-path]')
+      .filter({ hasText: 'alice@example.com' })
+      .getByRole('button', { name: /^Review comparable:/ })
+      .click();
+    await reviewer(page);
+    const minimap = page.getByRole('grid', { name: 'Score minimap' });
+    await expect(minimap.getByRole('gridcell')).toHaveCount(1);
+    await page.evaluate(async () => {
+      await (window as any).jupyterapp.commands.execute(
+        'correxit-reviewer:right'
+      );
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const app = (window as any).jupyterapp;
+          return (window as any).__correxit__.Workbook.open(
+            app.shell.currentWidget.workbook
+          ).assignment.assignee;
+        })
+      )
+      .toBe('alice@example.com');
+    await page.evaluate(() => (window as any).__reviewingCorrector.release());
+    await expect(minimap.getByRole('gridcell')).toHaveCount(2);
+    await page.evaluate(async () => {
+      await (window as any).jupyterapp.commands.execute(
+        'correxit-reviewer:right'
+      );
+    });
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const app = (window as any).jupyterapp;
+          return (window as any).__correxit__.Workbook.open(
+            app.shell.currentWidget.workbook
+          ).assignment.assignee;
+        })
+      )
+      .toBe('bob@example.com');
+    await expect(
+      page.getByText('Certified (read-only)', { exact: true })
+    ).toBeVisible();
+    await expect(
+      page.locator('.correxit-reviewer-source[aria-label="Current cell"]')
+    ).toContainText('print(42)');
+  } finally {
+    await page.evaluate(() => {
+      const held = (window as any).__reviewingCorrector;
+      held.release?.();
+      (window as any).__correxit__.Workbook.certify = held.certify;
+    });
+    await close(page);
+    await cleanup(page, propagated);
+    await dispose();
+  }
+});
+
 test('closing corrector drains an active save before disposing contexts', async ({
   page
 }) => {

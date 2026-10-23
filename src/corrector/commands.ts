@@ -13,6 +13,7 @@ import { ServiceManager } from '@jupyterlab/services';
 import { Assignment, Correxit, Rubric, Workbook } from '..';
 import * as io from '../correxit/io';
 import * as kernels from '../correxit/kernels';
+import * as state from '../correxit/state';
 import { Corrector, Reviewer } from '.';
 import * as bridge from './bridge';
 import * as csv from './csv';
@@ -265,10 +266,15 @@ export function commands(
         if (!pending) return;
         pending.controller.abort();
         await pending.done.promise;
-        if (release && runs.get(run) === pending) {
+        if (!release) return;
+        const inject = await commands.execute(Correxit.CommandIDs.inject);
+        if (runs.get(run) === pending) {
           runs.delete(run);
           if (reviewer?.workbook && pending.contexts.has(reviewer.workbook))
             reviewer.dispose();
+          const workbook = state.workbook();
+          if (workbook && !workbook.content && pending.contexts.has(workbook))
+            inject?.(null);
           pending.contexts.forEach(({ context }) => context.dispose());
         }
       }

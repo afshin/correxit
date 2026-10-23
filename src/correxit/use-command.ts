@@ -63,6 +63,7 @@ export function useCommand<T>(
           if (performance.now() - painted >= 16) {
             flush();
             await new Promise<void>(resolve => setTimeout(resolve, 0));
+            if (interrupted) return;
             painted = performance.now();
           }
         }
