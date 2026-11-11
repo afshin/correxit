@@ -118,6 +118,9 @@ version selection remains separate from `cxtformat`.
 ## Releasing `@correxit/contracts`
 
 `@correxit/contracts` is versioned and released independently from `correxit`.
+Both follow the same [public-license schedule](../README.md#license):
+`AGPL-3.0-only` now, with `BSD-3-Clause` available from 00:00 UTC on
+1 January 2028.
 
 1. Set the version in `packages/contracts/package.json` (`1.0.0` for the initial
    release; increase it for later releases) and update its `CHANGELOG.md`.

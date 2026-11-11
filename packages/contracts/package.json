@@ -12,7 +12,7 @@
   "bugs": {
     "url": "https://github.com/correxit/correxit/issues"
   },
-  "license": "BSD-3-Clause",
+  "license": "AGPL-3.0-only",
   "author": {
     "name": "A. T. Darian",
     "email": "correxit@darian.link"

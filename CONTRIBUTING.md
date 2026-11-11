@@ -8,7 +8,8 @@ See the [README](README.md#development-install) for development setup and
 Contributions submitted before **00:00 UTC on 1 January 2028** require
 acceptance of the [CLA](CLA.md), unless the necessary rights are already held
 under another applicable agreement. Contributions submitted at or after that
-time require no CLA.
+time require no CLA. These terms apply to all Correxit packages, including
+`@correxit/contracts`.
 
 Maintainers verify acceptance during PR review and record it in the
 [CLA acceptance register](CLA-SIGNATURES.md). One acceptance covers later

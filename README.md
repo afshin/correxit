@@ -117,16 +117,13 @@ jupyter labextension list
 
 ## License
 
-Correxit is open source under the
+Correxit, including `@correxit/contracts`, is open source under the
 [GNU Affero General Public License version 3 only](LICENSE)
 (`AGPL-3.0-only`). Version 2.0 marks its first open-source release.
 
-The separate `@correxit/contracts` package is available under
-[BSD-3-Clause](packages/contracts/LICENSE).
-
 ### Scheduled transition to BSD 3-Clause
 
-Correxit will switch to the
+All Correxit packages will switch to the
 [BSD 3-Clause License](https://opensource.org/license/bsd-3-clause) at 00:00
 UTC on 1 January 2028. At that time, Correxit will also become available under
 `BSD-3-Clause`; releases made from that time forward will use
