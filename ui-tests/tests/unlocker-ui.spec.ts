@@ -186,51 +186,279 @@ test('a hosted unlocker supports the full lifecycle without passphrases', async 
   await dispose();
 });
 
-test('conversion waits for key custody before committing metadata', async ({
-  page
-}) => {
-  const { dispose } = await setup(page, [{ id: 'answer', source: 'answer' }]);
-  const result = await page.evaluate(async () => {
-    const { Correxit, Workbook } = (window as any).__correxit__;
-    const app = (window as any).jupyterapp;
-    const workbook = app.shell.currentWidget;
-    const unlocker = await app.resolveRequiredService(Correxit.Unlocker);
-    const previous = { ...unlocker };
-    let release!: () => void;
-    let entered!: () => void;
-    const waiting = new Promise<void>(resolve => {
-      entered = resolve;
-    });
-    const custody = new Promise<void>(resolve => {
-      release = resolve;
-    });
-    Object.assign(unlocker, {
-      request: async function* () {
-        yield { key: 'ab'.repeat(32), passphrase: null };
-      },
-      store: async () => {
-        entered();
-        await custody;
+for (const stage of ['request', 'store']) {
+  test(`conversion retains its proposed identity while awaiting ${stage}`, async ({
+    page
+  }) => {
+    const { dispose } = await setup(page, [{ id: 'answer', source: 'answer' }]);
+    const result = await page.evaluate(async stage => {
+      const { Correxit, Workbook } = (window as any).__correxit__;
+      const app = (window as any).jupyterapp;
+      const workbook = app.shell.currentWidget;
+      const unlocker = await app.resolveRequiredService(Correxit.Unlocker);
+      const previous = { ...unlocker };
+      const original = workbook.context.model.toJSON();
+      original.nbformat_minor = 4;
+      Workbook.restore(workbook, original);
+      const snapshot = JSON.stringify(workbook.context.model.toJSON());
+      const requested: any[] = [];
+      const stored: any[] = [];
+      const uncommitted: boolean[] = [];
+      let release!: () => void;
+      let entered!: () => void;
+      const waiting = new Promise<void>(resolve => {
+        entered = resolve;
+      });
+      const custody = new Promise<void>(resolve => {
+        release = resolve;
+      });
+      Object.assign(unlocker, {
+        request: async function* (request: any) {
+          requested.push(request);
+          uncommitted.push(Workbook.open(workbook, true) === null);
+          if (stage === 'request') {
+            entered();
+            await custody;
+          }
+          yield { key: 'ab'.repeat(32), passphrase: null };
+        },
+        store: async (id: string, key: string) => {
+          stored.push({ id, key });
+          uncommitted.push(Workbook.open(workbook, true) === null);
+          if (stage === 'store') {
+            entered();
+            await custody;
+          }
+        }
+      });
+      try {
+        const converting = app.commands.execute('correxit:convert');
+        await waiting;
+        const before = Workbook.open(workbook, true);
+        const unchanged =
+          snapshot === JSON.stringify(workbook.context.model.toJSON());
+        const enabled = app.commands.isEnabled('correxit:convert');
+        await app.commands.execute('correxit:convert');
+        release();
+        await converting;
+        const rubric = Workbook.open(workbook);
+        const persisted = workbook.context.model.toJSON().metadata.correxit;
+        const { identifier, path, purpose } = requested[0];
+        return {
+          before: before === null,
+          unchanged,
+          enabled,
+          uncommitted,
+          requests: requested.length,
+          stores: stored.length,
+          purpose,
+          identifier,
+          path,
+          id: rubric.id,
+          same:
+            identifier.rubric === stored[0].id && stored[0].id === persisted.id,
+          key: rubric.key === stored[0].key,
+          minor: workbook.context.model.nbformatMinor
+        };
+      } finally {
+        release();
+        Object.assign(unlocker, previous);
       }
+    }, stage);
+    expect(result).toMatchObject({
+      before: true,
+      unchanged: true,
+      enabled: false,
+      uncommitted: [true, true],
+      requests: 1,
+      stores: 1,
+      purpose: 'create',
+      same: true,
+      key: true,
+      minor: 5
     });
-    try {
-      const converting = app.commands.execute('correxit:convert');
-      await waiting;
-      const before = Workbook.open(workbook, true);
-      release();
-      await converting;
-      return {
-        before: before === null,
-        after: !!Workbook.open(workbook, true)
-      };
-    } finally {
-      release();
-      Object.assign(unlocker, previous);
-    }
+    expect(result.identifier).toEqual({
+      assignee: null,
+      assignment: null,
+      file: result.path.split('/').pop(),
+      issue: null,
+      rubric: result.id
+    });
+    await expect(page.locator('.jp-Dialog')).toHaveCount(0);
+    await dispose();
   });
-  expect(result).toEqual({ before: true, after: true });
-  await dispose();
-});
+}
+
+for (const stage of ['request', 'store']) {
+  test(`conversion does not replace a workbook created while awaiting ${stage}`, async ({
+    page
+  }) => {
+    const { dispose } = await setup(page, [{ id: 'answer', source: 'answer' }]);
+    const result = await page.evaluate(async stage => {
+      const { Correxit, Rubric, Workbook } = (window as any).__correxit__;
+      const app = (window as any).jupyterapp;
+      const workbook = app.shell.currentWidget;
+      const unlocker = await app.resolveRequiredService(Correxit.Unlocker);
+      const previous = { ...unlocker };
+      const lock = Rubric.lock;
+      const replacement = Rubric.create();
+      let commit!: () => void;
+      let ready!: () => void;
+      const writing = new Promise<void>(resolve => {
+        ready = resolve;
+      });
+      const persistence = new Promise<void>(resolve => {
+        commit = resolve;
+      });
+      Rubric.lock = async (rubric: any) => {
+        if (stage === 'store' && rubric.id === replacement.id) {
+          ready();
+          await persistence;
+        }
+        return lock(rubric);
+      };
+      let release!: () => void;
+      let entered!: () => void;
+      const waiting = new Promise<void>(resolve => {
+        entered = resolve;
+      });
+      const custody = new Promise<void>(resolve => {
+        release = resolve;
+      });
+      const requested: string[] = [];
+      const stored: string[] = [];
+      Object.assign(unlocker, {
+        request: async function* ({ identifier }: any) {
+          requested.push(identifier.rubric);
+          if (stage === 'request') {
+            entered();
+            await custody;
+          }
+          yield { key: 'ab'.repeat(32), passphrase: null };
+        },
+        store: async (id: string) => {
+          stored.push(id);
+          if (stage === 'store') {
+            entered();
+            await custody;
+          }
+        }
+      });
+      try {
+        const converting = app.commands.execute('correxit:convert');
+        await waiting;
+        const replacing = Workbook.convert(
+          workbook,
+          'replacement',
+          { request: async function* () {}, store: async () => {} },
+          replacement
+        );
+        // Cover both a committed replacement and one still encrypting metadata.
+        if (stage === 'store') await writing;
+        else await replacing;
+        const snapshot = JSON.stringify(workbook.context.model.toJSON());
+        release();
+        await converting;
+        const result = {
+          unchanged:
+            snapshot === JSON.stringify(workbook.context.model.toJSON()),
+          retained: Workbook.open(workbook).id === replacement.id,
+          requested,
+          stored,
+          id: replacement.id
+        };
+        commit();
+        await replacing;
+        return result;
+      } finally {
+        release();
+        commit();
+        Rubric.lock = lock;
+        Object.assign(unlocker, previous);
+      }
+    }, stage);
+    expect(result.unchanged).toBe(true);
+    expect(result.retained).toBe(true);
+    expect(result.requested).toHaveLength(1);
+    expect(result.requested[0]).not.toBe(result.id);
+    expect(result.stored).toEqual(stage === 'store' ? result.requested : []);
+    if (stage === 'store') {
+      const dialog = page.locator('.jp-Dialog');
+      await expect(dialog).toContainText('conversion superseded');
+      await dialog.getByRole('button', { name: 'Close' }).click();
+    }
+    await expect(page.locator('.jp-Dialog')).toHaveCount(0);
+    await dispose();
+  });
+}
+
+for (const outcome of ['cancel', 'decline', 'deny']) {
+  test(`creation preserves the notebook on ${outcome} and retries with a fresh identity`, async ({
+    page
+  }) => {
+    const { dispose } = await setup(page, [{ id: 'answer', source: 'answer' }]);
+    const result = await page.evaluate(async outcome => {
+      const { Correxit, Workbook } = (window as any).__correxit__;
+      const app = (window as any).jupyterapp;
+      const workbook = app.shell.currentWidget;
+      const unlocker = await app.resolveRequiredService(Correxit.Unlocker);
+      const previous = { ...unlocker };
+      const snapshot = JSON.stringify(workbook.context.model.toJSON());
+      const requested: string[] = [];
+      const stored: string[] = [];
+      Object.assign(unlocker, {
+        request: async function* ({ identifier, purpose }: any) {
+          if (purpose === 'create') requested.push(identifier.rubric);
+          if (purpose === 'create' && requested.length === 1) {
+            if (outcome === 'deny') throw new Error('Access denied');
+            if (outcome === 'decline') yield null;
+            return;
+          }
+          yield { key: null, passphrase: 'author' };
+        },
+        store: async (id: string) => {
+          stored.push(id);
+        }
+      });
+      try {
+        await app.commands.execute('correxit:convert');
+        const unchanged =
+          snapshot === JSON.stringify(workbook.context.model.toJSON());
+        const empty =
+          Workbook.open(workbook, true) === null && stored.length === 0;
+        await app.commands.execute('correxit:convert');
+        const rubric = Workbook.open(workbook);
+        await Workbook.lock(workbook);
+        // Re-derive using the persisted ID, rather than a provider-supplied key.
+        const unlocked = await app.commands.execute('correxit:unlock');
+        return {
+          unchanged,
+          empty,
+          requested,
+          id: rubric.id,
+          stored,
+          unlocked: unlocked.id === rubric.id && !unlocked.locked
+        };
+      } finally {
+        Object.assign(unlocker, previous);
+      }
+    }, outcome);
+    expect(result.unchanged).toBe(true);
+    expect(result.empty).toBe(true);
+    expect(result.requested).toHaveLength(2);
+    expect(result.requested[0]).not.toBe(result.requested[1]);
+    expect(result.requested[1]).toBe(result.id);
+    expect(result.stored).toEqual([result.id, result.id]);
+    expect(result.unlocked).toBe(true);
+    if (outcome === 'deny') {
+      const dialog = page.locator('.jp-Dialog');
+      await expect(dialog).toContainText('Access denied');
+      await dialog.getByRole('button', { name: 'Close' }).click();
+    }
+    await expect(page.locator('.jp-Dialog')).toHaveCount(0);
+    await dispose();
+  });
+}
 
 for (const outcome of ['cancel', 'decline', 'deny']) {
   test(`submission respects an unlocker decision to ${outcome}`, async ({

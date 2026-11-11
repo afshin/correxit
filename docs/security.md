@@ -55,6 +55,12 @@ student credentials by rubric and assignee. Creation awaits author-key storage;
 a hosted provider must persist student credentials before yielding them for
 submission.
 
+Creation requests carry a proposed rubric ID allocated in memory by core. The
+same ID binds credential acquisition, key derivation, storage, and the committed
+rubric. It is not proof of an existing workbook or authorization. Cancellation
+and failed key storage leave the notebook unchanged; providers must tolerate
+abandoned creation requests.
+
 The author's PGP private key is stored in
 `assignment.keys.private.author`, encrypted with the same
 symmetric key that encrypts the roster. `Workbook.unlock`

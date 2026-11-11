@@ -666,14 +666,16 @@ export namespace Workbook {
     return { grade, identifier, workbook };
   }
 
-  /** Convert a plain notebook into a workbook and return its rubric. */
+  /** Convert a notebook, retaining a prepared rubric's identity when supplied. */
   export async function convert(
     workbook: Workbook,
     credentials: security.Secret | string,
-    unlocker: Unlocker
+    unlocker: Unlocker,
+    created: ReturnType<typeof Rubric.create> | null = null
   ): Promise<Rubric.Unlocked> {
     try {
       const opened = open(workbook)!;
+      if (created) throw new Error.Invalid('conversion superseded');
       const key = await security.derive(credentials, opened.id);
       const rubric = opened.locked ? await Rubric.unlock(opened, key) : opened;
       return update(workbook, rubric);
@@ -681,14 +683,18 @@ export namespace Workbook {
       if (error !== Correxit.NO_CORREXIT_METADATA) throw error;
 
       const model = workbook.context.model;
-      if (model.nbformatMinor < 5) {
-        // Ensure nbformat 4.5 so cell IDs persist on save.
-        const notebook = model.toJSON() as INotebookContent;
-        notebook.nbformat_minor = 5;
-        model.fromJSON(notebook);
-      }
-
-      const created = Rubric.create();
+      const current = () => {
+        if (workbook.context.isDisposed || model.isDisposed)
+          throw new Error.Invalid('conversion target disposed');
+        try {
+          open(workbook);
+        } catch (error) {
+          if (error === Correxit.NO_CORREXIT_METADATA) return;
+          throw error;
+        }
+        throw new Error.Invalid('conversion superseded');
+      };
+      created = created || Rubric.create();
       const key = await security.derive(credentials, created.id);
       const pair = await security.keypair();
       const armored = await security.encrypt(pair.private, key);
@@ -697,7 +703,15 @@ export namespace Workbook {
         public: { assignee: null, author: pair.public }
       };
       const assignment = { ...created.assignment, keys };
+      current();
       await unlocker.store(created.id, key);
+      current();
+      if (model.nbformatMinor < 5) {
+        // Ensure nbformat 4.5 so cell IDs persist on save.
+        const notebook = model.toJSON() as INotebookContent;
+        notebook.nbformat_minor = 5;
+        model.fromJSON(notebook);
+      }
       return update(workbook, { ...created, assignment, key });
     }
   }
@@ -922,8 +936,11 @@ export namespace Workbook {
     }
   }
 
-  export function identifier(workbook: Workbook): Identifier {
-    const rubric = open(workbook, quiet);
+  /** Identify the current rubric, or a proposed rubric before conversion. */
+  export function identifier(
+    workbook: Workbook,
+    rubric: Rubric.Base | null = open(workbook, quiet)
+  ): Identifier {
     if (!rubric) throw new Error.Invalid('identifier error');
 
     const assignee = rubric.assignment.assignee || null;

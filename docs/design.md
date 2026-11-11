@@ -158,6 +158,13 @@ Writing metadata and saving the notebook file are separate. Commands perform
 follow-up saves and undo-history clearing only after metadata succeeds, using
 the context they resolved at the start.
 
+Conversion prepares a rubric in memory before requesting credentials. The
+provider receives its proposed identity, and conversion retains that ID through
+key derivation, storage, and metadata writes. No workbook metadata or format
+upgrade is committed before key storage succeeds. The command excludes
+overlapping conversions of the same notebook; cancellation releases the
+proposal, and a later attempt receives a fresh identity.
+
 ### Active workbook
 
 Command arguments must be serializable. Synchronous command logic (`isEnabled`,

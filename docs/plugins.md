@@ -253,11 +253,12 @@ namespace Unlocker {
   type Purpose = 'create' | 'submit' | 'revise' | 'recover' | 'unlock';
 
   type Request = {
-    identifier: Identifier | null;
     path: string;
-    purpose: Purpose;
     silent: boolean;
-  };
+  } & (
+    | { purpose: 'create'; identifier: Identifier }
+    | { purpose: Exclude<Purpose, 'create'>; identifier: Identifier | null }
+  );
 }
 ```
 
@@ -266,12 +267,23 @@ For `Secret.passphrase`, Correxit derives the key using the rubric ID as salt.
 
 ### Requests and storage
 
-`identifier` is `null` when no readable rubric exists. With `silent: true`,
-return available credentials without opening prompts or sign-in dialogs.
+For `create`, `identifier` is always present: Correxit prepares the rubric in
+memory before requesting credentials. Its `rubric` ID is the one used for key
+derivation, `store(rubric, key)`, and the resulting notebook metadata. `file` is
+the notebook basename; `assignee`, `assignment`, and `issue` are `null`.
+
+This identity describes a proposed workbook, not a committed or saved one.
+Cancellation or failed key storage leaves the notebook unchanged; a later
+creation attempt gets a fresh ID. Providers must tolerate abandoned requests.
+An overlapping conversion of the same notebook does not start another request.
+
+Other purposes may receive `identifier: null` when no readable rubric exists,
+such as recovery from damaged metadata. With `silent: true`, return available
+credentials without opening prompts or sign-in dialogs.
 
 | Purpose   | Credential | Use                                                           |
 | --------- | ---------- | ------------------------------------------------------------- |
-| `create`  | Author     | Create a workbook; no rubric exists yet.                      |
+| `create`  | Author     | Create a workbook using its proposed rubric identity.         |
 | `unlock`  | Author     | Open an authored workbook for editing or grading.             |
 | `submit`  | Student    | Protect the student's private key for later revision.         |
 | `revise`  | Student    | Reopen answers while keeping the rubric locked.               |
@@ -317,7 +329,7 @@ const hostedUnlocker: JupyterFrontEndPlugin<Unlocker> = {
     return {
       async *request({ identifier, purpose }) {
         if (purpose === 'create') {
-          const key = await api.generateAuthorKey();
+          const key = await api.generateAuthorKey(identifier.rubric);
           yield { key, passphrase: null };
           return;
         }

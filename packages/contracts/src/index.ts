@@ -180,11 +180,19 @@ export namespace Unlocker {
   export type Purpose = 'create' | 'submit' | 'revise' | 'recover' | 'unlock';
 
   export type Request = {
-    identifier: Identifier | null;
     path: string;
-    purpose: Purpose;
     silent: boolean;
-  };
+  } & (
+    | {
+        /** Proposed identity; creation may still be cancelled or fail. */
+        identifier: Identifier;
+        purpose: 'create';
+      }
+    | {
+        identifier: Identifier | null;
+        purpose: Exclude<Purpose, 'create'>;
+      }
+  );
 }
 
 export const UNLOCKER = 'correxit:unlocker';

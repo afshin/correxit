@@ -156,11 +156,16 @@ export type Unlocker = {
 export declare namespace Unlocker {
     type Purpose = 'create' | 'submit' | 'revise' | 'recover' | 'unlock';
     type Request = {
-        identifier: Identifier | null;
         path: string;
-        purpose: Purpose;
         silent: boolean;
-    };
+    } & ({
+        /** Proposed identity; creation may still be cancelled or fail. */
+        identifier: Identifier;
+        purpose: 'create';
+    } | {
+        identifier: Identifier | null;
+        purpose: Exclude<Purpose, 'create'>;
+    });
 }
 export declare const UNLOCKER = "correxit:unlocker";
 export declare const Unlocker: Token<Unlocker>;

@@ -13,13 +13,11 @@ export type Secrets = {
 
 export namespace Unlocker {
   /**
-   * Acquire credentials through the configured unlocker plugin without opening the rubric
-   * or changing the workbook.
+   * Acquire credentials for an explicit request without changing the workbook.
    */
   export async function request(
-    workbook: Workbook,
     unlocker: Correxit.Unlocker,
-    purpose: Correxit.Unlocker.Purpose,
+    request: Correxit.Unlocker.Request,
     credentials?: Partial<Workbook.Credentials & { silent?: boolean }> | null
   ): Promise<{ secret: security.Secret | null } | null> {
     if (credentials?.key)
@@ -27,20 +25,9 @@ export namespace Unlocker {
     if (credentials?.passphrase)
       return { secret: { key: null, passphrase: credentials.passphrase } };
 
-    const identifier = (() => {
-      try {
-        return Workbook.identifier(workbook);
-      } catch {
-        return null;
-      }
-    })();
-    const path = workbook.context.path;
-    const silent = !!credentials?.silent;
     for await (const secret of unlocker.request({
-      identifier,
-      path,
-      purpose,
-      silent
+      ...request,
+      silent: credentials?.silent ?? request.silent
     }))
       return { secret };
     return null;

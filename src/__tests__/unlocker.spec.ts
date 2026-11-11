@@ -335,8 +335,65 @@ describe('Unlocker', () => {
         { manager, passphrases: new Set<string>(), pending: null, token },
         trans
       );
-      return Unlocker.request(workbook, plugin, purpose, credentials);
+      return Unlocker.request(
+        plugin,
+        {
+          identifier: Workbook.identifier(workbook),
+          path,
+          purpose,
+          silent: false
+        },
+        credentials
+      );
     };
+
+    it('passes a proposed creation identity to the provider without opening a workbook', async () => {
+      const request: Correxit.Unlocker.Request = {
+        identifier: {
+          assignee: null,
+          assignment: null,
+          file: 'new.ipynb',
+          issue: null,
+          rubric: 'new-rubric'
+        },
+        path: 'folder/new.ipynb',
+        purpose: 'create',
+        silent: false
+      };
+      const received = jest.fn();
+      const plugin: Correxit.Unlocker = {
+        store: jest.fn(),
+        request: async function* (request) {
+          received(request);
+          yield { key: 'supplied', passphrase: null };
+        }
+      };
+      expect(await Unlocker.request(plugin, request)).toEqual({
+        secret: { key: 'supplied', passphrase: null }
+      });
+      expect(received).toHaveBeenCalledWith(request);
+      expect(Workbook.open).not.toHaveBeenCalled();
+      expect(plugin.store).not.toHaveBeenCalled();
+    });
+
+    it('allows recovery without a readable identity', async () => {
+      const received = jest.fn();
+      const request: Correxit.Unlocker.Request = {
+        identifier: null,
+        path,
+        purpose: 'recover',
+        silent: false
+      };
+      const plugin: Correxit.Unlocker = {
+        store: jest.fn(),
+        request: async function* (request) {
+          received(request);
+          yield null;
+        }
+      };
+      expect(await Unlocker.request(plugin, request)).toEqual({ secret: null });
+      expect(received).toHaveBeenCalledWith(request);
+    });
 
     it.each(['create', 'submit', 'revise', 'recover'] as const)(
       'accepts a supplied key for %s without prompting or unlocking',
@@ -397,7 +454,14 @@ describe('Unlocker', () => {
           { manager, passphrases, pending: null, token },
           trans
         );
-        expect(await Unlocker.request(workbook, plugin, purpose)).toEqual({
+        expect(
+          await Unlocker.request(plugin, {
+            identifier: Workbook.identifier(workbook),
+            path,
+            purpose,
+            silent: false
+          })
+        ).toEqual({
           secret: { key: null, passphrase: 'student' }
         });
         expect(passphrases.size).toBe(0);

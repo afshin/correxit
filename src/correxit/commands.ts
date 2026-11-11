@@ -83,6 +83,7 @@ export function commands(
   } = utilities;
   const trans = utilities.translator.load('correxit');
   const factory = new NotebookModelFactory();
+  const conversions = new WeakSet<Workbook['context']['model']['sharedModel']>();
   const fetch = (handle: Credentials, silent = false) =>
     io.request(handle, factory, manager, unlocker, silent);
   const open = (workbook: Workbook | null) => Workbook.open(workbook, true);
@@ -92,15 +93,13 @@ export function commands(
     await workbook.context.save();
   };
   const request = async (
-    workbook: Workbook,
-    purpose: Correxit.Unlocker.Purpose,
+    request: Correxit.Unlocker.Request,
     credentials?: Partial<Credentials & { silent?: boolean }> | null
   ) => {
     try {
       return await unlockerService.Unlocker.request(
-        workbook,
         unlocker,
-        purpose,
+        request,
         credentials
       );
     } catch (error) {
@@ -548,8 +547,11 @@ export function commands(
   disposables.push(commands.addCommand(CommandIDs.convert, {
     icon: Icons.convert,
     isEnabled: () => {
+      const workbook = state.workbook();
+      if (!workbook || conversions.has(workbook.context.model.sharedModel))
+        return false;
       try {
-        void Workbook.open(state.workbook());
+        void Workbook.open(workbook);
         return false;
       } catch (error) {
         return error === Correxit.NO_CORREXIT_METADATA;
@@ -562,69 +564,92 @@ export function commands(
       if (!workbook) return;
 
       const notebook = workbook.context.model.sharedModel;
-      const detected = nbgrader.detect(notebook.cells.map(cell => ({
-        id: cell.id,
-        cell_type: cell.cell_type,
-        source: cell.getSource(),
-        metadata: cell.toJSON().metadata as Record<string, any>
-      })));
-      if (detected) {
-        const { button } = await showDialog({
-          title: trans.__('Convert nbgrader notebook?'),
-          body: trans.__(
+      if (conversions.has(notebook) || open(workbook) ||
+        notebook.getMetadata('correxit')) return;
+      conversions.add(notebook);
+      commands.notifyCommandChanged(CommandIDs.convert);
+      try {
+        const detected = nbgrader.detect(notebook.cells.map(cell => ({
+          id: cell.id,
+          cell_type: cell.cell_type,
+          source: cell.getSource(),
+          metadata: cell.toJSON().metadata as Record<string, any>
+        })));
+        if (detected) {
+          const { button } = await showDialog({
+            title: trans.__('Convert nbgrader notebook?'),
+            body: trans.__(
 `This rewrites the current notebook in place as a Correxit workbook.
 If conversion fails, Correxit restores the original notebook.`
-          ),
-          buttons: [
-            Dialog.cancelButton({ label: trans.__('Cancel') }),
-            Dialog.okButton({ label: trans.__('Convert') })
-          ]
+            ),
+            buttons: [
+              Dialog.cancelButton({ label: trans.__('Cancel') }),
+              Dialog.okButton({ label: trans.__('Convert') })
+            ]
+          });
+          if (!button.accept) return;
+        }
+
+        const created = Rubric.create();
+        const choice = await request({
+          identifier: Workbook.identifier(workbook, created),
+          path: workbook.context.path,
+          purpose: 'create',
+          silent: false
+        }, args);
+        if (!choice?.secret) return;
+        if (workbook.context.isDisposed || open(workbook) ||
+          notebook.getMetadata('correxit')) return;
+
+        const snapshot = workbook.context.model.toJSON() as INotebookContent;
+        const overlay = document.createElement('div');
+        const converting = trans.__('Converting...');
+        overlay.classList.add('correxit-overlay', 'cxt-mod-loading');
+        overlay.dataset.label = converting;
+        overlay.setAttribute('role', 'status');
+        overlay.setAttribute('aria-live', 'polite');
+        overlay.setAttribute('aria-label', converting);
+        workbook.content?.node.parentElement?.appendChild(overlay);
+
+        let report: string[] | null;
+        try {
+          await Workbook.convert(workbook, choice.secret, unlocker, created);
+          report = await nbgrader.convert(workbook, trans);
+        } catch (error) {
+          const current = workbook.context.isDisposed ? null : open(workbook);
+          if (workbook.context.isDisposed ||
+            (current ? current.id !== created.id : notebook.getMetadata('correxit'))) {
+            void showErrorMessage(...Error.interpret(error, trans));
+            return;
+          }
+          Workbook.restore(workbook, snapshot);
+
+          const restored = trans.__('The original notebook was restored.');
+          const detail = Error.reason(error);
+          void showErrorMessage(
+            trans.__('Conversion failed; original notebook restored'),
+            new globalThis.Error(`${restored}\n\n${detail}`)
+          );
+          return;
+        } finally {
+          overlay.remove();
+        }
+        if (!report) return;
+
+        const node = document.createElement('span');
+        report.forEach((line, i) => {
+          if (i > 0) node.appendChild(document.createElement('br'));
+          node.appendChild(document.createTextNode(line));
         });
-        if (!button.accept) return;
-      }
-
-      const choice = await request(workbook, 'create', args);
-      if (!choice?.secret) return;
-
-      const snapshot = workbook.context.model.toJSON() as INotebookContent;
-      const overlay = document.createElement('div');
-      const converting = trans.__('Converting...');
-      overlay.classList.add('correxit-overlay', 'cxt-mod-loading');
-      overlay.dataset.label = converting;
-      overlay.setAttribute('role', 'status');
-      overlay.setAttribute('aria-live', 'polite');
-      overlay.setAttribute('aria-label', converting);
-      workbook.content?.node.parentElement?.appendChild(overlay);
-
-      let report: string[] | null;
-      try {
-        await Workbook.convert(workbook, choice.secret, unlocker);
-        report = await nbgrader.convert(workbook, trans);
-      } catch (error) {
-        Workbook.restore(workbook, snapshot);
-
-        const restored = trans.__('The original notebook was restored.');
-        const detail = Error.reason(error);
-        void showErrorMessage(
-          trans.__('Conversion failed; original notebook restored'),
-          new globalThis.Error(`${restored}\n\n${detail}`)
-        );
-        return;
+        void showDialog({
+          title: trans.__('Conversion summary'),
+          body: new Widget({ node }),
+          buttons: [Dialog.okButton({ label: trans.__('Continue') })]
+        });
       } finally {
-        overlay.remove();
+        conversions.delete(notebook);
+        commands.notifyCommandChanged(CommandIDs.convert);
       }
-      if (!report) return;
-
-      const node = document.createElement('span');
-      report.forEach((line, i) => {
-        if (i > 0) node.appendChild(document.createElement('br'));
-        node.appendChild(document.createTextNode(line));
-      });
-      void showDialog({
-        title: trans.__('Conversion summary'),
-        body: new Widget({ node }),
-        buttons: [Dialog.okButton({ label: trans.__('Continue') })]
-      });
     }
   }));
   disposables.push(commands.addCommand(CommandIDs.correct, {
@@ -991,7 +1016,12 @@ If conversion fails, Correxit restores the original notebook.`
         cell => security.encrypted(cell.getSource())
       );
       if (encrypted) {
-        const choice = await request(workbook, 'recover', args);
+        const choice = await request({
+          identifier: open(workbook) ? Workbook.identifier(workbook) : null,
+          path: workbook.context.path,
+          purpose: 'recover',
+          silent: false
+        }, args);
         if (!choice) return;
         if (choice.secret) {
           const recovered = await Workbook.recover(workbook, choice.secret);
@@ -1106,7 +1136,12 @@ If conversion fails, Correxit restores the original notebook.`
         return;
       }
 
-      const choice = await request(workbook, 'submit', args);
+      const choice = await request({
+        identifier,
+        path: workbook.context.path,
+        purpose: 'submit',
+        silent: false
+      }, args);
       if (!choice) return;
       try {
         const recipients = await Workbook.recipients(workbook, choice.secret);
@@ -1140,7 +1175,12 @@ If conversion fails, Correxit restores the original notebook.`
       const { rubric, workbook } = await reify({ path: args.path });
       if (!rubric?.locked) return;
 
-      const choice = await request(workbook, 'revise', args);
+      const choice = await request({
+        identifier: Workbook.identifier(workbook),
+        path: workbook.context.path,
+        purpose: 'revise',
+        silent: false
+      }, args);
       if (!choice?.secret) return;
 
       try {
