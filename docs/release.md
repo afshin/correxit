@@ -141,6 +141,19 @@ The first Correxit release using these contracts changes the plugin API. Include
 the [migration guide](plugins.md#migrating-existing-plugins) in its release notes.
 The saved notebook format remains unchanged.
 
+For local API checks, the default base is the merge base of `origin/main` and
+`HEAD`. In a fork, fetch the upstream repository and set `CONTRACTS_BASE`
+explicitly so the checks compare against its current `main`:
+
+```bash
+git fetch upstream main
+CONTRACTS_BASE=upstream/main pixi run jlpm test:contracts
+```
+
+Use the remote name that points to `correxit/correxit` in your checkout. The
+same override applies to `pixi run jlpm contracts:check`; CI supplies its base
+revision explicitly.
+
 ## Local packaging
 
 To inspect package archives without publishing:

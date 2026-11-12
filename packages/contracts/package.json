@@ -32,6 +32,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "CHANGELOG.md",
     "lib/**/*.{d.ts,d.ts.map,js,js.map}",
     "src/**/*.ts"
   ],
