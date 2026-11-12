@@ -205,7 +205,7 @@ test(
   }
 );
 
-test('the demo opens Chinook in JupyterLab', async () => {
+test('the demo opens Chinook', async () => {
   const versions = process.env.CORREXIT_SITE_REFRESH
     ? JSON.parse(
         await readFile(path.join(path.dirname(output), 'versions.json'), 'utf8')
@@ -226,9 +226,8 @@ test('the demo opens Chinook in JupyterLab', async () => {
       path.join(output, 'demo', 'files', 'chinook.ipynb')
     ].map(async source => JSON.parse(await readFile(source, 'utf8')))
   );
-  const [home, lab, runtime, config] = await Promise.all([
+  const [home, runtime, config] = await Promise.all([
     read(''),
-    readFile(path.join(output, 'demo', 'lab', 'index.html'), 'utf8'),
     readFile(path.join(output, 'demo', 'jupyter-lite.json'), 'utf8').then(
       JSON.parse
     ),
@@ -239,6 +238,13 @@ test('the demo opens Chinook in JupyterLab', async () => {
       'utf8'
     ).then(JSON.parse)
   ]);
+  const application = process.env.CORREXIT_SITE_REFRESH
+    ? 'lab'
+    : path.posix.basename(config['jupyter-config-data'].appUrl);
+  const page = await readFile(
+    path.join(output, 'demo', application, 'index.html'),
+    'utf8'
+  );
 
   const extension = runtime['jupyter-config-data'].federated_extensions.find(
     ({ name }) => name === 'correxit'
@@ -253,9 +259,12 @@ test('the demo opens Chinook in JupyterLab', async () => {
     (await lstat(path.join(output, 'demo'))).isSymbolicLink(),
     !process.env.MIKE_DOCS_VERSION
   );
-  assert.match(home, /href="demo\/lab\/?\?path=chinook\.ipynb"/);
-  assert.match(lab, /id="jupyter-lite-main"/);
-  assert.match(lab, /config-utils\.js/);
+  assert.equal(
+    home.match(/href="demo\/([^/?"]+)\/?\?path=chinook\.ipynb"/)?.[1],
+    application
+  );
+  assert.match(page, /id="jupyter-lite-main"/);
+  assert.match(page, /config-utils\.js/);
   assert.equal(
     notebooks[1].metadata.correxit.cxtformat,
     notebooks[0].metadata.correxit.cxtformat
