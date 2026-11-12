@@ -141,9 +141,7 @@ export const Registrar = new Token<Registrar>(REGISTRAR);
 /**
  * Receiver of submitted workbooks returning an external receipt.
  */
-export type Submitter = (
-  submitted: Submitter.Payload
-) => Promise<string | null>;
+export type Submitter = (payload: Submitter.Payload) => Promise<string | null>;
 
 export namespace Submitter {
   export type Payload = {

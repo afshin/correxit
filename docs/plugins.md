@@ -165,7 +165,7 @@ Return `false` when a prior delivery exists and `overwrite` is `false`.
 ## `Submitter`
 
 ```typescript
-type Submitter = (submitted: Submitter.Payload) => Promise<string | null>;
+type Submitter = (payload: Submitter.Payload) => Promise<string | null>;
 
 namespace Submitter {
   type Payload = {
