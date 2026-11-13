@@ -1,16 +1,21 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import test from 'node:test';
+import ts from 'typescript';
 import { check } from './check-contracts-api.mjs';
 
 const root = resolve(import.meta.dirname, '..');
@@ -55,6 +60,80 @@ test('contracts.api.md contains expected public tokens and contracts', () => {
   );
   // store() must be present in Unlocker type
   assert.match(content, /store\(rubric: string, key: string\): Promise<void>;/);
+});
+
+test('packed contracts support standalone providers and reject invalid requests', t => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'correxit-consumer-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const [archive] = JSON.parse(
+    execFileSync(
+      'npm',
+      ['pack', '--ignore-scripts', '--json', '--pack-destination', directory],
+      {
+        cwd: resolve(root, 'packages/contracts'),
+        encoding: 'utf8',
+        env: { ...process.env, npm_config_cache: resolve(directory, 'cache') }
+      }
+    )
+  );
+  const contracts = resolve(directory, 'node_modules/@correxit/contracts');
+  mkdirSync(contracts, { recursive: true });
+  execFileSync('tar', [
+    '-xzf',
+    resolve(directory, archive.filename),
+    '--strip-components=1',
+    '-C',
+    contracts
+  ]);
+  const manifest = JSON.parse(
+    readFileSync(resolve(contracts, 'package.json'), 'utf8')
+  );
+  for (const file of [
+    manifest.main,
+    manifest.types,
+    ...Object.values(manifest.exports['.']),
+    'README.md',
+    'LICENSE',
+    'CHANGELOG.md'
+  ]) {
+    assert.ok(
+      existsSync(resolve(contracts, file)),
+      `Missing packed file: ${file}`
+    );
+  }
+
+  // Only install the public runtime dependency, never the Correxit workspace.
+  const require = createRequire(import.meta.url);
+  mkdirSync(resolve(directory, 'node_modules/@lumino'));
+  symlinkSync(
+    dirname(require.resolve('@lumino/coreutils/package.json')),
+    resolve(directory, 'node_modules/@lumino/coreutils'),
+    'dir'
+  );
+  const consumer = resolve(directory, 'consumer.ts');
+  copyFileSync(resolve(root, 'scripts/tests/contracts.ts'), consumer);
+  const program = ts.createProgram([consumer], {
+    strict: true,
+    noEmit: true,
+    types: [],
+    lib: ['lib.es2020.d.ts'],
+    target: ts.ScriptTarget.ES2020,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler
+  });
+  const diagnostics = ts.getPreEmitDiagnostics(program);
+  assert.equal(
+    diagnostics.length,
+    0,
+    ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+      getCanonicalFileName: file => file,
+      getCurrentDirectory: () => directory,
+      getNewLine: () => '\n'
+    })
+  );
+  assert.ok(
+    program.getSourceFile(realpathSync(resolve(contracts, manifest.types)))
+  );
 });
 
 const fixture = t => {
