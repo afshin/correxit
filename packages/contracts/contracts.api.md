@@ -78,7 +78,7 @@ export declare namespace Registration {
 /**
  * Collector of certified workbook grades.
  */
-export type Collector = (certified: Collector.Payload) => Promise<string | null>;
+export type Collector = (payload: Collector.Payload) => Promise<string | null>;
 export declare namespace Collector {
     type Score = {
         code: string;
@@ -104,7 +104,7 @@ export declare const Collector: Token<Collector>;
 /**
  * Distributor of propagated workbooks to students or external destinations.
  */
-export type Distributor = (propagated: Distributor.Payload) => Promise<boolean>;
+export type Distributor = (payload: Distributor.Payload) => Promise<boolean>;
 export declare namespace Distributor {
     type Payload = {
         identifier: Identifier.Assigned;

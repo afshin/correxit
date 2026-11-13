@@ -1,8 +1,6 @@
 import { Token } from '@lumino/coreutils';
 
-/**
- * Stable correlation identity for a workbook state.
- */
+/** Stable correlation identity for a workbook state. */
 export type Identifier = {
   assignee: string | null;
   assignment: string | null;
@@ -13,10 +11,7 @@ export type Identifier = {
 
 export namespace Identifier {
   /** An identifier with guaranteed assignee and file paths. */
-  export type Assigned = Identifier & {
-    assignee: string;
-    file: string;
-  };
+  export type Assigned = Identifier & { assignee: string; file: string };
 
   /** Type guard for assigned identifiers. */
   export function assigned(id: Identifier): id is Assigned {
@@ -24,9 +19,7 @@ export namespace Identifier {
   }
 }
 
-/**
- * Structural JSON representation of a Jupyter notebook document.
- */
+/** Structural JSON representation of a Jupyter notebook document. */
 export type Notebook = {
   cells: Notebook.Cell[];
   metadata: Record<string, unknown>;
@@ -45,24 +38,15 @@ export namespace Notebook {
   };
 }
 
-/**
- * Sidecar resource file required by a workbook.
- */
-export type Resource = {
-  data: Uint8Array;
-  name: string;
-};
+/** Sidecar resource file required by a workbook. */
+export type Resource = { data: Uint8Array; name: string };
 
-/**
- * Symmetric key or passphrase credentials.
- */
+/** Symmetric key or passphrase credentials. */
 export type Secret =
   | { key: string; passphrase: null }
   | { key: null; passphrase: string };
 
-/**
- * Assignment registration metadata provided by a registrar.
- */
+/** Assignment registration metadata provided by a registrar. */
 export type Registration = {
   expiration: number | null;
   id: string | null;
@@ -72,18 +56,11 @@ export type Registration = {
 
 export namespace Registration {
   /** A named group or course of registrations. */
-  export type Group = {
-    assignments: Registration[];
-    group: string;
-  };
+  export type Group = { assignments: Registration[]; group: string };
 }
 
-/**
- * Collector of certified workbook grades.
- */
-export type Collector = (
-  certified: Collector.Payload
-) => Promise<string | null>;
+/** Collector of certified workbook grades. */
+export type Collector = (payload: Collector.Payload) => Promise<string | null>;
 
 export namespace Collector {
   export type Score = {
@@ -110,10 +87,8 @@ export namespace Collector {
 export const COLLECTOR = 'correxit:collector';
 export const Collector = new Token<Collector>(COLLECTOR);
 
-/**
- * Distributor of propagated workbooks to students or external destinations.
- */
-export type Distributor = (propagated: Distributor.Payload) => Promise<boolean>;
+/** Distributor of propagated workbooks to students or external destinations. */
+export type Distributor = (payload: Distributor.Payload) => Promise<boolean>;
 
 export namespace Distributor {
   export type Payload = {
@@ -128,9 +103,7 @@ export namespace Distributor {
 export const DISTRIBUTOR = 'correxit:distributor';
 export const Distributor = new Token<Distributor>(DISTRIBUTOR);
 
-/**
- * Provider of available assignment registrations.
- */
+/** Provider of available assignment registrations. */
 export type Registrar = (
   identifier: Identifier
 ) => Promise<Registration[] | Registration.Group[] | null>;
@@ -138,9 +111,7 @@ export type Registrar = (
 export const REGISTRAR = 'correxit:registrar';
 export const Registrar = new Token<Registrar>(REGISTRAR);
 
-/**
- * Receiver of submitted workbooks returning an external receipt.
- */
+/** Receiver of submitted workbooks returning an external receipt. */
 export type Submitter = (payload: Submitter.Payload) => Promise<string | null>;
 
 export namespace Submitter {
@@ -157,9 +128,7 @@ export namespace Submitter {
 export const SUBMITTER = 'correxit:submitter';
 export const Submitter = new Token<Submitter>(SUBMITTER);
 
-/**
- * Key custody provider for acquiring credentials and persisting author keys.
- */
+/** Key custody provider for requesting credentials and storing author keys. */
 export type Unlocker = {
   /**
    * Lazily yield candidate secrets for the given request.

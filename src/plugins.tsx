@@ -36,12 +36,12 @@ const collector: JupyterFrontEndPlugin<Correxit.Collector> =
     Correxit.DESCRIPTION.COLLECTOR,
     Correxit.Collector,
     (_, { moodle: settings, provider }) => {
-      const collector: Correxit.Collector = certified => {
+      const collector: Correxit.Collector = payload => {
         switch (provider()) {
           case 'moodle':
-            return Moodle.collector(certified, settings());
+            return Moodle.collector(payload, settings());
           default:
-            return collectors.manual(certified);
+            return collectors.manual(payload);
         }
       };
       return [collector, () => {}];
@@ -55,12 +55,12 @@ const distributor: JupyterFrontEndPlugin<Correxit.Distributor> =
     Correxit.DESCRIPTION.DISTRIBUTOR,
     Correxit.Distributor,
     (_, { moodle: settings, provider }) => {
-      const distributor: Correxit.Distributor = propagated => {
+      const distributor: Correxit.Distributor = payload => {
         switch (provider()) {
           case 'moodle':
-            return Moodle.distributor(propagated, settings());
+            return Moodle.distributor(payload, settings());
           default:
-            return distributors.manual(propagated);
+            return distributors.manual(payload);
         }
       };
       return [distributor, () => {}];

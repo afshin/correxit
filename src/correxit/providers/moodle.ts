@@ -144,7 +144,7 @@ export namespace Moodle {
   };
 
   export async function collector(
-    certified: Correxit.Collector.Payload,
+    payload: Correxit.Collector.Payload,
     settings: Settings
   ): Promise<string | null> {
     const { token, url: raw } = settings;
@@ -152,7 +152,7 @@ export namespace Moodle {
     if (!token || !url)
       throw new Error.Plugin('Moodle URL or token not configured');
 
-    const compound = certified.identifier.assignment;
+    const compound = payload.identifier.assignment;
     if (!compound) throw new Error.Plugin('collector error: no assignment ID');
 
     const [course, assignment] = compound.split(':');
@@ -160,19 +160,19 @@ export namespace Moodle {
       throw new Error.Plugin('collector error: invalid assignment ID format');
 
     const request = api(url, token);
-    const { assignee } = certified.identifier;
+    const { assignee } = payload.identifier;
     const enrolled = await enroll(request, course);
     const uid = enrolled.get(assignee);
     if (uid === undefined)
       throw new Error.Plugin(`collector error: no Moodle user for ${assignee}`);
 
-    const content = JSON.stringify(certified.notebook);
-    const file = await Assignment.filename(certified.name, assignee);
+    const content = JSON.stringify(payload.notebook);
+    const file = await Assignment.filename(payload.name, assignee);
     const item = await upload(url, token, content, file);
     if (!item)
       throw new Error.Plugin(`collector error: upload failed (${assignee})`);
 
-    const { points, possible } = certified.score;
+    const { points, possible } = payload.score;
     const max = await scale(request, course, assignment);
     const grade = possible > 0 ? (points / possible) * max : 0;
     await request(
@@ -192,10 +192,10 @@ export namespace Moodle {
   }
 
   export async function distributor(
-    parameters: Parameters<Correxit.Distributor>[0],
+    payload: Parameters<Correxit.Distributor>[0],
     settings: Settings
   ): ReturnType<Correxit.Distributor> {
-    const { identifier, notebook, overwrite, resources } = parameters;
+    const { identifier, notebook, overwrite, resources } = payload;
     const { token, url: raw } = settings;
     const url = URLExt.normalize(raw);
     if (!token || !url)

@@ -125,7 +125,7 @@ Integrators use `identifier` to fetch roster and assignment metadata.
 ```typescript
 type Resource = { name: string; data: Uint8Array };
 
-type Distributor = (propagated: Distributor.Payload) => Promise<boolean>;
+type Distributor = (payload: Distributor.Payload) => Promise<boolean>;
 
 namespace Distributor {
   type Payload = {
@@ -194,7 +194,7 @@ that authority belongs to the external system.
 ## `Collector`
 
 ```typescript
-type Collector = (certified: Collector.Payload) => Promise<string | null>;
+type Collector = (payload: Collector.Payload) => Promise<string | null>;
 
 namespace Collector {
   type Score = {
