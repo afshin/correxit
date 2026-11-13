@@ -124,9 +124,9 @@ Both follow the same [public-license schedule](../README.md#license):
 
 1. Set the version in `packages/contracts/package.json` (`1.0.0` for the initial
    release; increase it for later releases) and update its `CHANGELOG.md`.
-2. Run `pixi run jlpm build:contracts` and `pixi run jlpm contracts:update`
-   to update `packages/contracts/contracts.api.md`. CI compares this report
-   with the base revision and requires a version increase for API changes.
+2. Run `pixi run jlpm contracts:update` to build contracts and update
+   `packages/contracts/contracts.api.md`. CI compares this report with the base
+   revision and requires a version increase for API changes.
 3. Commit and merge to `main`. Wait for CI on the merged commit to pass.
 4. Publish a stable GitHub release at that exact commit, with tag `contracts-v`
    followed by the contracts package version (e.g. `contracts-v1.0.0`).

@@ -4,9 +4,7 @@
 
 ```ts
 import { Token } from '@lumino/coreutils';
-/**
- * Stable correlation identity for a workbook state.
- */
+/** Stable correlation identity for a workbook state. */
 export type Identifier = {
     assignee: string | null;
     assignment: string | null;
@@ -23,9 +21,7 @@ export declare namespace Identifier {
     /** Type guard for assigned identifiers. */
     function assigned(id: Identifier): id is Assigned;
 }
-/**
- * Structural JSON representation of a Jupyter notebook document.
- */
+/** Structural JSON representation of a Jupyter notebook document. */
 export type Notebook = {
     cells: Notebook.Cell[];
     metadata: Record<string, unknown>;
@@ -42,16 +38,12 @@ export declare namespace Notebook {
         [key: string]: unknown;
     };
 }
-/**
- * Sidecar resource file required by a workbook.
- */
+/** Sidecar resource file required by a workbook. */
 export type Resource = {
     data: Uint8Array;
     name: string;
 };
-/**
- * Symmetric key or passphrase credentials.
- */
+/** Symmetric key or passphrase credentials. */
 export type Secret = {
     key: string;
     passphrase: null;
@@ -59,9 +51,7 @@ export type Secret = {
     key: null;
     passphrase: string;
 };
-/**
- * Assignment registration metadata provided by a registrar.
- */
+/** Assignment registration metadata provided by a registrar. */
 export type Registration = {
     expiration: number | null;
     id: string | null;
@@ -75,9 +65,7 @@ export declare namespace Registration {
         group: string;
     };
 }
-/**
- * Collector of certified workbook grades.
- */
+/** Collector of certified workbook grades. */
 export type Collector = (payload: Collector.Payload) => Promise<string | null>;
 export declare namespace Collector {
     type Score = {
@@ -101,9 +89,7 @@ export declare namespace Collector {
 }
 export declare const COLLECTOR = "correxit:collector";
 export declare const Collector: Token<Collector>;
-/**
- * Distributor of propagated workbooks to students or external destinations.
- */
+/** Distributor of propagated workbooks to students or external destinations. */
 export type Distributor = (payload: Distributor.Payload) => Promise<boolean>;
 export declare namespace Distributor {
     type Payload = {
@@ -116,15 +102,11 @@ export declare namespace Distributor {
 }
 export declare const DISTRIBUTOR = "correxit:distributor";
 export declare const Distributor: Token<Distributor>;
-/**
- * Provider of available assignment registrations.
- */
+/** Provider of available assignment registrations. */
 export type Registrar = (identifier: Identifier) => Promise<Registration[] | Registration.Group[] | null>;
 export declare const REGISTRAR = "correxit:registrar";
 export declare const Registrar: Token<Registrar>;
-/**
- * Receiver of submitted workbooks returning an external receipt.
- */
+/** Receiver of submitted workbooks returning an external receipt. */
 export type Submitter = (payload: Submitter.Payload) => Promise<string | null>;
 export declare namespace Submitter {
     type Payload = {
@@ -138,9 +120,7 @@ export declare namespace Submitter {
 }
 export declare const SUBMITTER = "correxit:submitter";
 export declare const Submitter: Token<Submitter>;
-/**
- * Key custody provider for acquiring credentials and persisting author keys.
- */
+/** Key custody provider for requesting credentials and storing author keys. */
 export type Unlocker = {
     /**
      * Lazily yield candidate secrets for the given request.

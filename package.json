@@ -53,8 +53,8 @@
     "scripts": {
         "build": "jlpm build:lib && jlpm build:node && jlpm build:labextension:dev",
         "build:contracts": "jlpm workspace @correxit/contracts build",
-        "contracts:check": "node scripts/check-contracts-api.mjs",
-        "contracts:update": "node scripts/check-contracts-api.mjs --update",
+        "contracts:check": "jlpm build:contracts && node scripts/check-contracts-api.mjs",
+        "contracts:update": "jlpm build:contracts && node scripts/check-contracts-api.mjs --update",
         "build:prod": "jlpm build:npm && jlpm build:labextension",
         "build:labextension": "jupyter-builder build .",
         "build:labextension:dev": "jupyter-builder build --development True .",
